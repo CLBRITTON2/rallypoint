@@ -54,12 +54,12 @@ Exit codes: 0 done, 1 when `restore` could not bring back every window, 2 error.
 ## What it saves
 
 For each window GlazeWM manages: its workspace and state, and the program behind it (executable path, command line
-and owning account). For a [wezterm](https://wezterm.org) window it also saves the working directory of each pane,
+and owning account). Each session also records the workspace shown on each monitor and the one with focus. For a [wezterm](https://wezterm.org) window it also saves the working directory of each pane,
 and the [Claude Code](https://claude.com/claude-code) session a pane shows, if any.
 
 Sessions are JSON files in `%LOCALAPPDATA%\rallypoint\sessions\`, named by the time they were written. `watch`
-saves 2 s after a burst of window events and once a minute, skips a save that would match the last one, and keeps
-the newest 10. It stops saving while Windows shuts down, so the apps closing one by one never overwrite the session
+saves 2 s after a burst of window events and once a minute, skips a save whose windows match the last one, and keeps
+the newest 10. A focus change alone writes no session, so the focus restored is the one at the last window change. It stops saving while Windows shuts down, so the apps closing one by one never overwrite the session
 with an empty one.
 
 ## How restore works
@@ -72,6 +72,7 @@ with an empty one.
    executable and launched once with its saved command line, since a second launch of most apps opens a stray window
    instead of restoring the saved ones.
 4. Each window is moved to its saved workspace and state. Windows that are already right are left alone.
+5. The workspace each monitor showed is shown again, and the one that had focus gets it back.
 
 Running `restore` twice is safe: open windows are moved, never launched again.
 

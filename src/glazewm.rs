@@ -19,6 +19,9 @@ const URL: &str = "ws://127.0.0.1:6123";
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
     pub name: String,
+    pub has_focus: bool,
+    /// Shown on its monitor, which holds one displayed workspace at a time.
+    pub is_displayed: bool,
     pub children: Vec<Container>,
 }
 
@@ -125,6 +128,13 @@ impl Client {
 
     pub fn set_state(&mut self, id: &str, state: State) -> Result<(), Error> {
         self.query::<IgnoredAny>(&format!("command --id {id} {}", state.command()))?;
+        Ok(())
+    }
+
+    /// Focuses `workspace` and shows it on its monitor. With `toggle_workspace_on_refocus` set, focusing the focused
+    /// workspace jumps to the previous one instead, so callers focus only a workspace that is not focused.
+    pub fn focus_workspace(&mut self, workspace: &str) -> Result<(), Error> {
+        self.query::<IgnoredAny>(&format!("command focus --workspace {workspace}"))?;
         Ok(())
     }
 
@@ -266,7 +276,7 @@ mod tests {
     #[test]
     fn windows_walks_nested_splits_in_order() -> Result<(), serde_json::Error> {
         let workspace: Workspace = serde_json::from_str(
-            r#"{"type":"workspace","name":"2","children":[
+            r#"{"type":"workspace","name":"2","hasFocus":false,"isDisplayed":true,"children":[
                 {"type":"window","id":"x","handle":1,"title":"a","className":"c","processName":"p",
                  "state":{"type":"tiling"}},
                 {"type":"split","children":[
