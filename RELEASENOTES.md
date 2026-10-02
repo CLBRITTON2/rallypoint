@@ -10,6 +10,10 @@ release go under `## [Unreleased]`, renamed to the version when it is tagged.
 - `rallypoint restore <path>` brings back the session at that path, so a bad save no longer hides the one before it.
 - Sessions record the workspace shown on each monitor and the focused one, and `restore` shows and focuses them
   again. Sessions saved by 0.1.0 restore without changing the focus.
+- pwsh, Windows PowerShell and cmd windows reopen in their saved folder, one console per window. A PowerShell
+  console's folder is the one it started in, since `cd` does not change it. The README has an optional prompt line
+  that makes it the folder of the last `cd`.
+- Windows Terminal windows reopen through `wt.exe` with their saved tabs, each shell tab in its folder.
 
 ## [0.1.0] - 2026-10-02
 

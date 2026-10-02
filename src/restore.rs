@@ -2,8 +2,10 @@
 //! workspace.
 
 use std::fmt;
+use std::mem::size_of;
+use std::os::windows::ffi::OsStrExt;
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
@@ -11,10 +13,17 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation};
 use windows::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE};
+use windows::Win32::System::Threading::{
+    CREATE_NEW_CONSOLE, CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
+};
+use windows_core::{Owned, PCWSTR, PWSTR};
 
 use crate::error::Error;
 use crate::glazewm::{Client, Event};
-use crate::session::{Focus, LiveWindow, SavedWindow, Session, Sources};
+use crate::session::{
+    Focus, LiveWindow, SavedTab, SavedWindow, Session, Sources, WINDOWS_TERMINAL, is_shell,
+    program_name,
+};
 use crate::uncloak;
 
 /// How long launched windows get to appear. A Claude Code window started through `runas` takes a few seconds.
@@ -34,8 +43,50 @@ enum Key {
         owner: String,
         cwd: PathBuf,
     },
+    /// A console shell, by who runs it and its folder. None is a folder save could not read, matching any.
+    Shell {
+        executable_path: String,
+        owner: String,
+        cwd: Option<PathBuf>,
+    },
+    /// A Windows Terminal window, by who runs it and its tabs. No tabs is a session saved before tabs were recorded,
+    /// matching any.
+    WindowsTerminal { owner: String, tabs: Vec<TabKey> },
     /// Any other window, by its program. Its windows are told apart only by order.
     Program { executable_path: String },
+}
+
+impl Key {
+    /// Whether an open window with key `live` is the saved window with this key.
+    fn matches(&self, live: &Key) -> bool {
+        match (self, live) {
+            (
+                Key::Shell {
+                    executable_path,
+                    owner,
+                    cwd: None,
+                },
+                Key::Shell {
+                    executable_path: live_path,
+                    owner: live_owner,
+                    ..
+                },
+            ) => executable_path == live_path && owner == live_owner,
+            (
+                Key::WindowsTerminal { owner, tabs },
+                Key::WindowsTerminal {
+                    owner: live_owner, ..
+                },
+            ) if tabs.is_empty() => owner == live_owner,
+            _ => self == live,
+        }
+    }
+}
+
+#[derive(PartialEq, Debug)]
+struct TabKey {
+    executable_path: Option<String>,
+    cwd: Option<PathBuf>,
 }
 
 /// A program to start, as `owner`.
@@ -45,6 +96,15 @@ struct Launch {
     program: String,
     /// Passed verbatim, so the saved command line's quoting survives.
     arguments: String,
+    start: Start,
+}
+
+#[derive(PartialEq, Debug)]
+enum Start {
+    /// With no console and no output, so an app's logging never buries the report.
+    Detached,
+    /// In a console of its own, in `cwd` when one was saved.
+    Console { cwd: Option<PathBuf> },
 }
 
 impl Launch {
@@ -265,6 +325,26 @@ fn key(window: &SavedWindow) -> Result<Key, &'static str> {
             cwd: pane.cwd.clone(),
         });
     }
+    if window.process_name == WINDOWS_TERMINAL {
+        return Ok(Key::WindowsTerminal {
+            owner: window.owner.clone(),
+            tabs: window
+                .tabs
+                .iter()
+                .map(|tab| TabKey {
+                    executable_path: tab.executable_path.clone(),
+                    cwd: tab.cwd.clone(),
+                })
+                .collect(),
+        });
+    }
+    if is_shell(&window.process_name) {
+        return Ok(Key::Shell {
+            executable_path: executable_path.clone(),
+            owner: window.owner.clone(),
+            cwd: window.cwd.clone(),
+        });
+    }
     Ok(Key::Program {
         executable_path: executable_path.clone(),
     })
@@ -293,7 +373,12 @@ fn assign(saved: &[SavedWindow], live: &[LiveWindow]) -> Vec<Option<usize>> {
             let index = live_keys
                 .iter()
                 .zip(&claimed)
-                .position(|(live_key, taken)| !taken && live_key.as_ref() == Some(&wanted))?;
+                .position(|(live_key, taken)| {
+                    !taken
+                        && live_key
+                            .as_ref()
+                            .is_some_and(|live_key| wanted.matches(live_key))
+                })?;
             if let Some(taken) = claimed.get_mut(index) {
                 *taken = true;
             }
@@ -303,8 +388,8 @@ fn assign(saved: &[SavedWindow], live: &[LiveWindow]) -> Vec<Option<usize>> {
 }
 
 /// What to start for the saved windows not open yet, each with the indexes of the windows it brings back. Every
-/// wezterm-gui window is its own process, so each gets a launch. Any other program is launched once, since a second
-/// launch of Firefox or Mattermost opens a stray window instead of restoring the saved ones.
+/// wezterm-gui, Windows Terminal and shell window gets a launch of its own. Any other program is launched once, since
+/// a second launch of Firefox or Mattermost opens a stray window instead of restoring the saved ones.
 fn launches(saved: &[SavedWindow], open: &[Option<usize>]) -> Vec<(Launch, Vec<usize>)> {
     let mut planned: Vec<(Key, Launch, Vec<usize>)> = Vec::new();
     for (index, window) in saved.iter().enumerate() {
@@ -345,9 +430,28 @@ fn launch(window: &SavedWindow, key: &Key) -> Launch {
             Launch {
                 owner: owner.clone(),
                 program: executable_path.clone(),
-                arguments: format!("start --cwd \"{}\"{resume}", cwd.display()),
+                arguments: format!("start --cwd {}{resume}", quoted(cwd)),
+                start: Start::Detached,
             }
         }
+        // WindowsTerminal.exe is packaged and cannot be started, but its wt.exe alias on PATH can.
+        Key::WindowsTerminal { owner, .. } => Launch {
+            owner: owner.clone(),
+            program: "wt.exe".to_string(),
+            arguments: wt_arguments(&window.tabs),
+            start: Start::Detached,
+        },
+        // Without the saved arguments, so a window opened to run one command (a -Command) does not run it again.
+        Key::Shell {
+            executable_path,
+            owner,
+            cwd,
+        } => Launch {
+            owner: owner.clone(),
+            program: executable_path.clone(),
+            arguments: String::new(),
+            start: Start::Console { cwd: cwd.clone() },
+        },
         Key::Program { executable_path } => Launch {
             owner: window.owner.clone(),
             program: executable_path.clone(),
@@ -357,7 +461,46 @@ fn launch(window: &SavedWindow, key: &Key) -> Launch {
                 .map(arguments_of)
                 .unwrap_or_default()
                 .to_string(),
+            start: Start::Detached,
         },
+    }
+}
+
+/// wt.exe arguments opening one new window holding `tabs`. A shell tab runs its program alone, so a tab opened to run
+/// one command does not run it again. A tab with neither program nor command line is left out.
+fn wt_arguments(tabs: &[SavedTab]) -> String {
+    let opened: Vec<String> = tabs
+        .iter()
+        .filter_map(|tab| {
+            let path = tab.executable_path.as_deref();
+            let command = match (path, tab.command_line.as_deref()) {
+                (Some(path), _) if is_shell(&program_name(path)) => format!("\"{path}\""),
+                (_, Some(command_line)) => command_line.to_string(),
+                (Some(path), None) => format!("\"{path}\""),
+                (None, None) => return None,
+            };
+            let folder = tab
+                .cwd
+                .as_deref()
+                .map(|cwd| format!("-d {} ", quoted(cwd)))
+                .unwrap_or_default();
+            // wt.exe splits its arguments into subcommands at every bare ;
+            Some(format!("new-tab {folder}{command}").replace(';', r"\;"))
+        })
+        .collect();
+    match opened.is_empty() {
+        true => "-w new".to_string(),
+        false => format!("-w new {}", opened.join(" ; ")),
+    }
+}
+
+/// `folder` as one command line argument. A trailing backslash is doubled, since `\"` would escape the closing quote.
+fn quoted(folder: &Path) -> String {
+    let folder = folder.display().to_string();
+    if folder.ends_with('\\') {
+        format!("\"{folder}\\\"")
+    } else {
+        format!("\"{folder}\"")
     }
 }
 
@@ -371,24 +514,73 @@ fn arguments_of(command_line: &str) -> &str {
     rest.trim()
 }
 
-/// Starts `launch` without waiting for it. Another owner's program goes through `runas /savecred`, which is waited
-/// for, because it reports a missing saved credential only in its exit code and output.
+/// Starts `launch` without waiting for it.
 fn spawn(launch: &Launch, user: &str) -> Result<(), Error> {
-    let command_line = launch.command_line();
-    if launch.owner.eq_ignore_ascii_case(user) {
-        // Electron apps log to an inherited console, which would bury the report.
-        return Command::new(&launch.program)
-            .raw_arg(&launch.arguments)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map(drop)
-            .map_err(|source| Error::Launch {
-                command_line,
-                source,
-            });
+    if !launch.owner.eq_ignore_ascii_case(user) {
+        return spawn_as(launch);
     }
+    match &launch.start {
+        Start::Detached => spawn_detached(launch),
+        Start::Console { cwd } => spawn_console(launch, cwd.as_deref()),
+    }
+}
+
+fn spawn_detached(launch: &Launch) -> Result<(), Error> {
+    // Electron apps log to an inherited console, which would bury the report.
+    Command::new(&launch.program)
+        .raw_arg(&launch.arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(drop)
+        .map_err(|source| Error::Launch {
+            command_line: launch.command_line(),
+            source,
+        })
+}
+
+/// Opens `launch` in a new console. `Command` always hands the child standard handles, so a shell started through it
+/// would read and write rallypoint's (hidden at startup) instead of its own console.
+fn spawn_console(launch: &Launch, cwd: Option<&Path>) -> Result<(), Error> {
+    let command_line = launch.command_line();
+    let mut wide_command_line: Vec<u16> = command_line.encode_utf16().chain([0]).collect();
+    let wide_cwd: Option<Vec<u16>> =
+        cwd.map(|cwd| cwd.as_os_str().encode_wide().chain([0]).collect());
+    let startup = STARTUPINFOW {
+        cb: size_of::<STARTUPINFOW>() as u32,
+        ..Default::default()
+    };
+    let mut started = PROCESS_INFORMATION::default();
+    unsafe {
+        CreateProcessW(
+            PCWSTR::null(),
+            Some(PWSTR(wide_command_line.as_mut_ptr())),
+            None,
+            None,
+            false,
+            CREATE_NEW_CONSOLE,
+            None,
+            wide_cwd
+                .as_ref()
+                .map_or(PCWSTR::null(), |wide_cwd| PCWSTR(wide_cwd.as_ptr())),
+            &startup,
+            &mut started,
+        )
+    }
+    .map_err(|source| Error::Launch {
+        command_line,
+        source: source.into(),
+    })?;
+    drop(unsafe { (Owned::new(started.hProcess), Owned::new(started.hThread)) });
+    Ok(())
+}
+
+/// Starts another owner's program through `runas /savecred`, which opens a console program in a console of its own
+/// but cannot set its folder. It is waited for, because it reports a missing saved credential only in its exit code
+/// and output.
+fn spawn_as(launch: &Launch) -> Result<(), Error> {
+    let command_line = launch.command_line();
     let output = Command::new("runas")
         .arg(format!("/user:{}", launch.owner))
         .arg("/savecred")
@@ -426,7 +618,9 @@ mod tests {
             title: String::new(),
             class_name: String::new(),
             state: State::Tiling,
+            cwd: None,
             panes: Vec::new(),
+            tabs: Vec::new(),
         }
     }
 
@@ -440,12 +634,120 @@ mod tests {
             title: String::new(),
             class_name: String::new(),
             state: State::Tiling,
+            cwd: None,
             panes: vec![SavedPane {
                 cwd: PathBuf::from(cwd),
                 title: String::new(),
                 claude_session_id: claude_session_id.map(str::to_string),
             }],
+            tabs: Vec::new(),
         }
+    }
+
+    fn shell(cwd: Option<&str>) -> SavedWindow {
+        SavedWindow {
+            process_name: "pwsh".to_string(),
+            cwd: cwd.map(PathBuf::from),
+            ..program(
+                r"C:\Program Files\PowerShell\7\pwsh.exe",
+                "pwsh -NoExit -Command rallypoint restore",
+            )
+        }
+    }
+
+    fn windows_terminal(tabs: Vec<SavedTab>) -> SavedWindow {
+        SavedWindow {
+            process_name: WINDOWS_TERMINAL.to_string(),
+            tabs,
+            ..program(
+                r"C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1\WindowsTerminal.exe",
+                "",
+            )
+        }
+    }
+
+    fn tab(path: &str, command_line: &str, cwd: Option<&str>) -> SavedTab {
+        SavedTab {
+            executable_path: Some(path.to_string()),
+            command_line: Some(command_line.to_string()),
+            cwd: cwd.map(PathBuf::from),
+        }
+    }
+
+    const PWSH: &str = r"C:\Program Files\PowerShell\7\pwsh.exe";
+
+    #[test]
+    fn launches_open_each_windows_terminal_window_with_its_tabs() {
+        let saved = vec![
+            windows_terminal(vec![
+                tab(
+                    PWSH,
+                    r#""C:\Program Files\PowerShell\7\pwsh.exe" -c x"#,
+                    Some(r"C:\a;b"),
+                ),
+                tab(r"C:\WINDOWS\system32\cmd.exe", "cmd", None),
+                tab(
+                    r"C:\WINDOWS\system32\wsl.exe",
+                    "wsl.exe -d Ubuntu -- ls;ls",
+                    None,
+                ),
+            ]),
+            windows_terminal(Vec::new()),
+        ];
+        let planned: Vec<(String, Vec<usize>)> = launches(&saved, &[None, None])
+            .into_iter()
+            .map(|(launch, windows)| (launch.command_line(), windows))
+            .collect();
+        assert_eq!(
+            planned,
+            vec![
+                (
+                    r#""wt.exe" -w new new-tab -d "C:\a\;b" "C:\Program Files\PowerShell\7\pwsh.exe" ; new-tab "C:\WINDOWS\system32\cmd.exe" ; new-tab wsl.exe -d Ubuntu -- ls\;ls"#
+                        .to_string(),
+                    vec![0]
+                ),
+                (r#""wt.exe" -w new"#.to_string(), vec![1]),
+            ]
+        );
+    }
+
+    #[test]
+    fn assign_matches_windows_terminal_by_tabs_and_an_old_session_by_owner() {
+        let at = |cwd: &str| windows_terminal(vec![tab(PWSH, "pwsh", Some(cwd))]);
+        let saved = vec![at(r"C:\a"), windows_terminal(Vec::new()), at(r"C:\c")];
+        let open = vec![live(at(r"C:\b")), live(at(r"C:\a"))];
+        assert_eq!(assign(&saved, &open), vec![Some(1), Some(0), None]);
+    }
+
+    #[test]
+    fn assign_matches_a_shell_by_folder_and_an_unread_folder_by_program() {
+        let saved = vec![shell(Some(r"C:\zet")), shell(None), shell(Some(r"C:\a"))];
+        let open = vec![live(shell(Some(r"C:\b"))), live(shell(Some(r"C:\zet")))];
+        assert_eq!(assign(&saved, &open), vec![Some(1), Some(0), None]);
+    }
+
+    #[test]
+    fn launches_open_each_shell_in_its_folder_without_its_arguments() {
+        let saved = vec![shell(Some(r"C:\zet")), shell(None)];
+        let planned: Vec<(Launch, Vec<usize>)> = launches(&saved, &[None, None]);
+        let program = r"C:\Program Files\PowerShell\7\pwsh.exe".to_string();
+        let expected = |cwd: Option<&str>, index: usize| {
+            (
+                Launch {
+                    owner: "owner".to_string(),
+                    program: program.clone(),
+                    arguments: String::new(),
+                    start: Start::Console {
+                        cwd: cwd.map(PathBuf::from),
+                    },
+                },
+                vec![index],
+            )
+        };
+        assert_eq!(
+            planned,
+            vec![expected(Some(r"C:\zet"), 0), expected(None, 1)]
+        );
     }
 
     fn live(window: SavedWindow) -> LiveWindow {
