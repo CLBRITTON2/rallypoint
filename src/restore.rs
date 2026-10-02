@@ -14,7 +14,7 @@ use windows::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT
 
 use crate::error::Error;
 use crate::glazewm::{Client, Event};
-use crate::session::{LiveWindow, SavedWindow, Session, Sources};
+use crate::session::{Focus, LiveWindow, SavedWindow, Session, Sources};
 use crate::uncloak;
 
 /// How long launched windows get to appear. A Claude Code window started through `runas` takes a few seconds.
@@ -115,6 +115,7 @@ pub fn restore(session: &Session, user: &str) -> Result<Vec<Outcome>, Error> {
             place(&mut sources, window, target)?;
         }
     }
+    refocus(&mut sources, &session.focus)?;
     Ok(saved
         .iter()
         .enumerate()
@@ -199,6 +200,28 @@ fn place(sources: &mut Sources, saved: &SavedWindow, target: &LiveWindow) -> Res
         sources.glazewm().set_state(&target.id, saved.state)?;
     }
     Ok(())
+}
+
+/// Shows each saved displayed workspace on its monitor and focuses the saved focused one.
+fn refocus(sources: &mut Sources, focus: &Focus) -> Result<(), Error> {
+    for workspace in focus_order(focus) {
+        if sources.focus()?.focused.as_deref() != Some(workspace) {
+            sources.glazewm().focus_workspace(workspace)?;
+        }
+    }
+    Ok(())
+}
+
+/// The workspaces to focus in turn: every displayed one, the focused one last so it keeps the focus.
+fn focus_order(focus: &Focus) -> Vec<&str> {
+    let focused = focus.focused.as_deref();
+    focus
+        .displayed
+        .iter()
+        .map(String::as_str)
+        .filter(|workspace| Some(*workspace) != focused)
+        .chain(focused)
+        .collect()
 }
 
 /// Reads the open windows until every window at an index in `expected` has a match, or [`WAIT`] runs out. A read
@@ -430,6 +453,16 @@ mod tests {
             id: String::new(),
             window,
         }
+    }
+
+    #[test]
+    fn focus_order_ends_on_the_focused_workspace() {
+        let focus = Focus {
+            displayed: vec!["11".to_string(), "3".to_string()],
+            focused: Some("11".to_string()),
+        };
+        assert_eq!(focus_order(&focus), vec!["3", "11"]);
+        assert_eq!(focus_order(&Focus::default()), Vec::<&str>::new());
     }
 
     #[test]

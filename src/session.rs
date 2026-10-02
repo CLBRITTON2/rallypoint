@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::claude;
 use crate::error::Error;
-use crate::glazewm::{Client, State, Window};
+use crate::glazewm::{Client, State, Window, Workspace};
 use crate::process::{Process, Processes};
 use crate::wezterm;
 
@@ -16,7 +16,18 @@ use crate::wezterm;
 pub struct Session {
     /// Unix milliseconds.
     pub saved_at: u128,
+    /// Sessions saved before focus was recorded load with none, and restore then leaves the focus alone.
+    #[serde(default)]
+    pub focus: Focus,
     pub windows: Vec<SavedWindow>,
+}
+
+/// Which workspaces were on screen.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct Focus {
+    /// One per monitor.
+    pub displayed: Vec<String>,
+    pub focused: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -88,14 +99,34 @@ impl Sources {
         }
         Ok(windows)
     }
+
+    pub fn focus(&mut self) -> Result<Focus, Error> {
+        Ok(focus_of(&self.glazewm.workspaces()?))
+    }
 }
 
 pub fn capture() -> Result<Session, Error> {
-    let windows = Sources::connect()?.live_windows()?;
+    let mut sources = Sources::connect()?;
+    let windows = sources.live_windows()?;
     Ok(Session {
         saved_at: now()?,
+        focus: sources.focus()?,
         windows: windows.into_iter().map(|live| live.window).collect(),
     })
+}
+
+fn focus_of(workspaces: &[Workspace]) -> Focus {
+    Focus {
+        displayed: workspaces
+            .iter()
+            .filter(|workspace| workspace.is_displayed)
+            .map(|workspace| workspace.name.clone())
+            .collect(),
+        focused: workspaces
+            .iter()
+            .find(|workspace| workspace.has_focus)
+            .map(|workspace| workspace.name.clone()),
+    }
 }
 
 /// The current time in Unix milliseconds, the unit of `saved_at`.
@@ -306,6 +337,28 @@ mod tests {
     }
 
     #[test]
+    fn focus_of_takes_displayed_and_focused_workspaces() -> Result<(), serde_json::Error> {
+        let workspaces: Vec<Workspace> = serde_json::from_str(
+            r#"[{"name":"1","hasFocus":false,"isDisplayed":false,"children":[]},
+                {"name":"2","hasFocus":false,"isDisplayed":true,"children":[]},
+                {"name":"11","hasFocus":true,"isDisplayed":true,"children":[]}]"#,
+        )?;
+        let expected = Focus {
+            displayed: vec!["2".to_string(), "11".to_string()],
+            focused: Some("11".to_string()),
+        };
+        assert_eq!(focus_of(&workspaces), expected);
+        Ok(())
+    }
+
+    #[test]
+    fn a_session_without_focus_loads_with_none() -> Result<(), serde_json::Error> {
+        let session: Session = serde_json::from_str(r#"{"saved_at":1,"windows":[]}"#)?;
+        assert_eq!(session.focus, Focus::default());
+        Ok(())
+    }
+
+    #[test]
     fn age_uses_the_largest_whole_unit() {
         assert_eq!(age(0, 59_999), "59 s ago");
         assert_eq!(age(0, 60_000), "1 min ago");
@@ -329,6 +382,7 @@ mod tests {
                 &folder,
                 &Session {
                     saved_at,
+                    focus: Focus::default(),
                     windows: Vec::new(),
                 },
             )?;
@@ -348,6 +402,7 @@ mod tests {
                 &folder,
                 &Session {
                     saved_at,
+                    focus: Focus::default(),
                     windows: Vec::new(),
                 },
             )?;
