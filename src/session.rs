@@ -93,12 +93,17 @@ impl Sources {
 pub fn capture() -> Result<Session, Error> {
     let windows = Sources::connect()?.live_windows()?;
     Ok(Session {
-        saved_at: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(Error::Clock)?
-            .as_millis(),
+        saved_at: now()?,
         windows: windows.into_iter().map(|live| live.window).collect(),
     })
+}
+
+/// The current time in Unix milliseconds, the unit of `saved_at`.
+pub fn now() -> Result<u128, Error> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(Error::Clock)?
+        .as_millis())
 }
 
 /// Every session file in `folder`, oldest first.
@@ -124,16 +129,50 @@ fn saved_paths(folder: &Path) -> Result<Vec<PathBuf>, Error> {
     Ok(saved.into_iter().map(|(_, path)| path).collect())
 }
 
+/// Every session file in `folder`, newest first.
+pub fn newest_first(folder: &Path) -> Result<Vec<PathBuf>, Error> {
+    Ok(saved_paths(folder)?.into_iter().rev().collect())
+}
+
 /// The newest session in `folder`, the one with the largest `saved_at`.
 pub fn latest(folder: &Path) -> Result<Session, Error> {
     let path = saved_paths(folder)?.pop().ok_or_else(|| Error::NoSession {
         folder: folder.to_path_buf(),
     })?;
-    let text = fs::read_to_string(&path).map_err(|source| Error::Read {
-        path: path.clone(),
+    read(&path)
+}
+
+pub fn read(path: &Path) -> Result<Session, Error> {
+    let text = fs::read_to_string(path).map_err(|source| Error::Read {
+        path: path.to_path_buf(),
         source,
     })?;
-    serde_json::from_str(&text).map_err(|source| Error::Decode { path, source })
+    serde_json::from_str(&text).map_err(|source| Error::Decode {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// How long before `now` a session saved at `saved_at` was written, in its largest whole unit, as `12 min ago`.
+pub fn age(saved_at: u128, now: u128) -> String {
+    let seconds = now.saturating_sub(saved_at) / 1000;
+    match seconds {
+        0..60 => format!("{seconds} s ago"),
+        60..3600 => format!("{} min ago", seconds / 60),
+        3600..86400 => format!("{} h ago", seconds / 3600),
+        _ => format!("{} d ago", seconds / 86400),
+    }
+}
+
+/// How many distinct workspaces `windows` sit on.
+pub fn workspace_count(windows: &[SavedWindow]) -> usize {
+    let mut names: Vec<&str> = windows
+        .iter()
+        .map(|window| window.workspace.as_str())
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names.len()
 }
 
 fn saved_window(
@@ -264,6 +303,41 @@ mod tests {
     fn same_windows_ignores_titles_only() {
         assert!(same_windows(&[window("a", "1")], &[window("b", "1")]));
         assert!(!same_windows(&[window("a", "1")], &[window("a", "2")]));
+    }
+
+    #[test]
+    fn age_uses_the_largest_whole_unit() {
+        assert_eq!(age(0, 59_999), "59 s ago");
+        assert_eq!(age(0, 60_000), "1 min ago");
+        assert_eq!(age(0, 3_599_999), "59 min ago");
+        assert_eq!(age(0, 7_200_000), "2 h ago");
+        assert_eq!(age(0, 86_400_000), "1 d ago");
+        assert_eq!(age(5_000, 1_000), "0 s ago");
+    }
+
+    #[test]
+    fn workspace_count_counts_each_name_once() {
+        let windows = [window("a", "2"), window("b", "1"), window("c", "2")];
+        assert_eq!(workspace_count(&windows), 2);
+    }
+
+    #[test]
+    fn newest_first_reverses_save_order() -> Result<(), Box<dyn std::error::Error>> {
+        let folder = std::env::temp_dir().join(format!("rallypoint-newest-{}", std::process::id()));
+        for saved_at in [3, 10, 2] {
+            write(
+                &folder,
+                &Session {
+                    saved_at,
+                    windows: Vec::new(),
+                },
+            )?;
+        }
+        let listed = newest_first(&folder)?;
+        fs::remove_dir_all(&folder)?;
+        let names = ["10.json", "3.json", "2.json"].map(|name| folder.join(name));
+        assert_eq!(listed, names);
+        Ok(())
     }
 
     #[test]

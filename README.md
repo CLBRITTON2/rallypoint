@@ -20,8 +20,12 @@ Requires Windows 11 and GlazeWM 3 with its IPC server on the default `ws://127.0
 ```powershell
 # write the current session and print its path
 rallypoint save
+# print every saved session, newest first, with its age and window count
+rallypoint list
 # bring the newest session back and print one line per saved window
 rallypoint restore
+# bring back an older session, by a path from list
+rallypoint restore $env:LOCALAPPDATA\rallypoint\sessions\1790965947095.json
 # keep the saved session current until GlazeWM exits
 rallypoint watch
 ```

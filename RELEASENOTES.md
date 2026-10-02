@@ -6,6 +6,9 @@ release go under `## [Unreleased]`, renamed to the version when it is tagged.
 
 ## [Unreleased]
 
+- `rallypoint list` prints every saved session, newest first, with its age, window count and workspace count.
+- `rallypoint restore <path>` brings back the session at that path, so a bad save no longer hides the one before it.
+
 ## [0.1.0] - 2026-10-02
 
 First release.

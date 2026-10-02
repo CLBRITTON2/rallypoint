@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("usage: rallypoint save | rallypoint restore | rallypoint watch, got {0:?}")]
+    #[error(
+        "usage: rallypoint save | rallypoint list | rallypoint restore [<session path>] | rallypoint watch, got {0:?}"
+    )]
     Usage(Vec<String>),
     #[error("connecting to GlazeWM at {url} failed, is it running? {source}")]
     GlazeConnect {
