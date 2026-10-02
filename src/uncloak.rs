@@ -194,7 +194,9 @@ mod tests {
             title: String::new(),
             class_name: String::new(),
             state: State::Tiling,
+            cwd: None,
             panes: Vec::new(),
+            tabs: Vec::new(),
         }
     }
 

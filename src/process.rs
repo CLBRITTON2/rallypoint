@@ -4,7 +4,7 @@
 use serde::Deserialize;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
-use wmi::WMIConnection;
+use wmi::{WMIConnection, WMIDateTime};
 
 use crate::error::Error;
 
@@ -23,6 +23,16 @@ struct Win32Process {
     path: String,
     executable_path: Option<String>,
     command_line: Option<String>,
+}
+
+/// A process and when it started.
+#[derive(Deserialize)]
+#[serde(rename = "Win32_Process", rename_all = "PascalCase")]
+pub struct Started {
+    pub process_id: u32,
+    pub executable_path: Option<String>,
+    pub command_line: Option<String>,
+    pub creation_date: WMIDateTime,
 }
 
 #[derive(Deserialize)]
@@ -68,6 +78,27 @@ impl Processes {
     /// which own some of the windows this is asked about. None for a protected process.
     pub fn executable_path_of_window(&self, handle: isize) -> Result<Option<String>, Error> {
         Ok(self.win32_process(handle)?.1.executable_path)
+    }
+
+    /// The processes in `pids` still running, oldest first.
+    pub fn started(&self, pids: &[u32]) -> Result<Vec<Started>, Error> {
+        if pids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let filter: Vec<String> = pids
+            .iter()
+            .map(|pid| format!("ProcessId = {pid}"))
+            .collect();
+        let query = format!(
+            "SELECT ProcessId, ExecutablePath, CommandLine, CreationDate FROM Win32_Process WHERE {}",
+            filter.join(" OR ")
+        );
+        let mut found: Vec<Started> = self.wmi.raw_query(&query).map_err(|source| Error::Wmi {
+            query: query.clone(),
+            source,
+        })?;
+        found.sort_by_key(|process| process.creation_date);
+        Ok(found)
     }
 
     fn win32_process(&self, handle: isize) -> Result<(u32, Win32Process), Error> {

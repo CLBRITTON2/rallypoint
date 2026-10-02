@@ -44,6 +44,15 @@ pub enum Error {
     },
     #[error("process {pid} of window handle {handle} exited during the save")]
     ProcessGone { pid: u32, handle: isize },
+    #[error("{call} failed while reading the working directory of process {pid}: {source}")]
+    Cwd {
+        pid: u32,
+        call: &'static str,
+        #[source]
+        source: windows::core::Error,
+    },
+    #[error("EnumWindows failed while finding the Windows Terminal tabs: {0}")]
+    Tabs(#[source] windows::core::Error),
     #[error("GetOwner of process {pid} returned {code}")]
     Owner { pid: u32, code: u32 },
     #[error("the environment variable {name} is not set")]

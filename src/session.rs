@@ -7,9 +7,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::claude;
+use crate::cwd;
 use crate::error::Error;
 use crate::glazewm::{Client, State, Window, Workspace};
 use crate::process::{Process, Processes};
+use crate::tabs::{self, Tab};
 use crate::wezterm;
 
 #[derive(Serialize, Deserialize)]
@@ -40,8 +42,23 @@ pub struct SavedWindow {
     pub title: String,
     pub class_name: String,
     pub state: State,
+    /// Only a console shell window has a folder, and only when it could be read.
+    pub cwd: Option<PathBuf>,
     /// Only wezterm-gui windows have panes.
     pub panes: Vec<SavedPane>,
+    /// Only Windows Terminal windows have tabs, oldest first. Sessions saved before tabs were recorded load with none.
+    #[serde(default)]
+    pub tabs: Vec<SavedTab>,
+}
+
+/// A Windows Terminal tab, by the program it runs.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct SavedTab {
+    /// None for a protected process.
+    pub executable_path: Option<String>,
+    pub command_line: Option<String>,
+    /// Only a shell has a folder, and only when it could be read.
+    pub cwd: Option<PathBuf>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -84,6 +101,7 @@ impl Sources {
     /// Every open window, read from GlazeWM, WMI, wezterm and Claude Code's session files.
     pub fn live_windows(&mut self) -> Result<Vec<LiveWindow>, Error> {
         let mut windows = Vec::new();
+        let tab_shells = tabs::all()?;
         for workspace in self.glazewm.workspaces()? {
             for window in workspace.windows() {
                 let process = self.processes.of_window(window.handle)?;
@@ -91,13 +109,49 @@ impl Sources {
                     "wezterm-gui" => saved_panes(&self.profiles.join(&process.owner), &process)?,
                     _ => Vec::new(),
                 };
+                let cwd = if is_shell(&window.process_name) {
+                    cwd::of_process(process.pid)?
+                } else {
+                    None
+                };
+                let tabs = match window.process_name.as_str() {
+                    WINDOWS_TERMINAL => self.saved_tabs(&tab_shells, window.handle)?,
+                    _ => Vec::new(),
+                };
                 windows.push(LiveWindow {
                     id: window.id.clone(),
-                    window: saved_window(&workspace.name, window, process, panes),
+                    window: saved_window(&workspace.name, window, process, cwd, panes, tabs),
                 });
             }
         }
         Ok(windows)
+    }
+
+    /// The tabs of the Windows Terminal window `handle`, among `tab_shells`, oldest first.
+    fn saved_tabs(&self, tab_shells: &[Tab], handle: isize) -> Result<Vec<SavedTab>, Error> {
+        let pids: Vec<u32> = tab_shells
+            .iter()
+            .filter(|tab| tab.window == handle)
+            .map(|tab| tab.pid)
+            .collect();
+        self.processes
+            .started(&pids)?
+            .into_iter()
+            .map(|process| {
+                let is_shell_tab = process
+                    .executable_path
+                    .as_deref()
+                    .is_some_and(|path| is_shell(&program_name(path)));
+                Ok(SavedTab {
+                    cwd: match is_shell_tab {
+                        true => cwd::of_process(process.process_id)?,
+                        false => None,
+                    },
+                    executable_path: process.executable_path,
+                    command_line: process.command_line,
+                })
+            })
+            .collect()
     }
 
     pub fn focus(&mut self) -> Result<Focus, Error> {
@@ -210,7 +264,9 @@ fn saved_window(
     workspace: &str,
     window: Window,
     process: Process,
+    cwd: Option<PathBuf>,
     panes: Vec<SavedPane>,
+    tabs: Vec<SavedTab>,
 ) -> SavedWindow {
     SavedWindow {
         workspace: workspace.to_string(),
@@ -221,9 +277,26 @@ fn saved_window(
         title: window.title,
         class_name: window.class_name,
         state: window.state.kind,
+        cwd,
         panes,
+        tabs,
     }
 }
+
+/// Whether a window is a console shell, which restore reopens in its saved folder, one launch per window.
+pub fn is_shell(process_name: &str) -> bool {
+    matches!(process_name, "pwsh" | "powershell" | "cmd")
+}
+
+/// The process name of an executable path, as GlazeWM names a window's process: `pwsh` for `C:\x\pwsh.exe`.
+pub fn program_name(executable_path: &str) -> String {
+    Path::new(executable_path)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+pub const WINDOWS_TERMINAL: &str = "WindowsTerminal";
 
 fn saved_panes(owner_home: &Path, process: &Process) -> Result<Vec<SavedPane>, Error> {
     let socket = wezterm::socket(owner_home, process.pid);
@@ -322,11 +395,13 @@ mod tests {
             title: title.to_string(),
             class_name: "c".to_string(),
             state: State::Tiling,
+            cwd: None,
             panes: vec![SavedPane {
                 cwd: PathBuf::from(r"C:\x"),
                 title: title.to_string(),
                 claude_session_id: None,
             }],
+            tabs: Vec::new(),
         }
     }
 
@@ -356,6 +431,26 @@ mod tests {
         let session: Session = serde_json::from_str(r#"{"saved_at":1,"windows":[]}"#)?;
         assert_eq!(session.focus, Focus::default());
         Ok(())
+    }
+
+    #[test]
+    fn a_window_without_cwd_loads_with_none() -> Result<(), serde_json::Error> {
+        let window: SavedWindow = serde_json::from_str(
+            r#"{"workspace":"1","process_name":"pwsh","executable_path":null,"command_line":null,"owner":"o",
+                "title":"","class_name":"","state":"tiling","panes":[]}"#,
+        )?;
+        assert_eq!(window.cwd, None);
+        assert_eq!(window.tabs, Vec::new());
+        Ok(())
+    }
+
+    #[test]
+    fn program_name_is_the_file_stem() {
+        assert_eq!(
+            program_name(r"C:\Program Files\PowerShell\7\pwsh.exe"),
+            "pwsh"
+        );
+        assert_eq!(program_name(r"C:\WINDOWS\system32\cmd.exe"), "cmd");
     }
 
     #[test]

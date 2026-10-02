@@ -54,13 +54,22 @@ Exit codes: 0 done, 1 when `restore` could not bring back every window, 2 error.
 ## What it saves
 
 For each window GlazeWM manages: its workspace and state, and the program behind it (executable path, command line
-and owning account). Each session also records the workspace shown on each monitor and the one with focus. For a [wezterm](https://wezterm.org) window it also saves the working directory of each pane,
-and the [Claude Code](https://claude.com/claude-code) session a pane shows, if any.
+and owning account). Each session also records the workspace shown on each monitor and the one with focus. For a
+[wezterm](https://wezterm.org) window it also saves the working directory of each pane, and the
+[Claude Code](https://claude.com/claude-code) session a pane shows, if any. For a console shell (pwsh, Windows
+PowerShell or cmd) it saves the shell's folder. For a Windows Terminal window it saves each tab's program and, for a
+shell tab, its folder. PowerShell's `cd` changes only PowerShell's own location, not its process's folder, so a
+PowerShell console or tab reopens in the folder it started in. To have it reopen where you last `cd`'d, add this
+line to the `prompt` function in your PowerShell profile (it is optional, and rallypoint works without it):
+
+```powershell
+if ($PWD.Provider.Name -eq 'FileSystem') { [Environment]::CurrentDirectory = $PWD.ProviderPath }
+```
 
 Sessions are JSON files in `%LOCALAPPDATA%\rallypoint\sessions\`, named by the time they were written. `watch`
 saves 2 s after a burst of window events and once a minute, skips a save whose windows match the last one, and keeps
-the newest 10. A focus change alone writes no session, so the focus restored is the one at the last window change. It stops saving while Windows shuts down, so the apps closing one by one never overwrite the session
-with an empty one.
+the newest 10. A focus change alone writes no session, so the focus restored is the one at the last window change. It
+stops saving while Windows shuts down, so the apps closing one by one never overwrite the session with an empty one.
 
 ## How restore works
 
@@ -70,7 +79,10 @@ with an empty one.
 3. Open windows are matched to saved ones, and the rest are launched. A wezterm window is matched by its first pane's
    folder and reopened there, resuming its Claude Code session if it had one. Any other program is matched by its
    executable and launched once with its saved command line, since a second launch of most apps opens a stray window
-   instead of restoring the saved ones.
+   instead of restoring the saved ones. A shell is matched by its folder and reopened there in a console of its own,
+   one per window, without its saved arguments, so a window opened to run one command does not run it again.
+   A Windows Terminal window is matched by its tabs and reopened with `wt.exe -w new`, one tab per saved tab in the
+   order they were opened, each shell tab in its folder and without its saved arguments.
 4. Each window is moved to its saved workspace and state. Windows that are already right are left alone.
 5. The workspace each monitor showed is shown again, and the one that had focus gets it back.
 
@@ -84,8 +96,12 @@ as that account.
 
 - Split layouts are not rebuilt. Windows come back on the right workspace in saved order, but GlazeWM's IPC cannot
   build a split tree.
-- Store apps are matched when open but never launched, since their executables cannot be started directly.
-- Elevated windows relaunch unelevated.
+- Store apps other than Windows Terminal are matched when open but never launched, since their executables cannot be
+  started directly.
+- Windows Terminal split panes come back as tabs, tabs come back in the order they were opened rather than a dragged
+  order, and the first tab is the active one.
+- Elevated windows relaunch unelevated. The folder of an elevated shell, or of another account's, cannot be read, so
+  it reopens in the default folder.
 - A multi-pane wezterm window comes back with its first pane only.
 - What happens inside a window is up to the app: a browser restores its own tabs.
 
