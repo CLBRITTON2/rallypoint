@@ -32,12 +32,13 @@ rallypoint watch
 
 The usual setup is to run `restore` then `watch` from GlazeWM's `startup_commands`, in one hidden shell, so `watch`
 starts only after `restore` is done. A `watch` that started first would save the half-open login session over the
-one you want back. Adjust the path to wherever `rallypoint.exe` lives:
+one you want back. The shell decodes the redirected report with the console code page unless its output encoding is
+set to UTF-8 first, which garbles any window title outside ASCII. Adjust the path to wherever `rallypoint.exe` lives:
 
 ```yaml
 general:
   startup_commands:
-    - 'shell-exec --hide-window C:/Program Files/PowerShell/7/pwsh.exe -NoProfile -Command & $HOME/.cargo/bin/rallypoint.exe restore *> $env:TEMP/rallypoint-restore.log; & $HOME/.cargo/bin/rallypoint.exe watch *> $env:TEMP/rallypoint-watch.log'
+    - 'shell-exec --hide-window C:/Program Files/PowerShell/7/pwsh.exe -NoProfile -Command [Console]::OutputEncoding = [Text.UTF8Encoding]::new(); & $HOME/.cargo/bin/rallypoint.exe restore *> $env:TEMP/rallypoint-restore.log; & $HOME/.cargo/bin/rallypoint.exe watch *> $env:TEMP/rallypoint-watch.log'
 ```
 
 A keybinding that runs `restore` in a visible shell is handy for bringing the session back by hand and reading the
@@ -55,9 +56,8 @@ Exit codes: 0 done, 1 when `restore` could not bring back every window, 2 error.
 
 For each window GlazeWM manages: its workspace and state, and the program behind it (executable path, command line
 and owning account). Each session also records the workspace shown on each monitor and the one with focus. For a
-[wezterm](https://wezterm.org) window it also saves the working directory of each pane, and the
-[Claude Code](https://claude.com/claude-code) session a pane shows, if any. For a console shell (pwsh, Windows
-PowerShell or cmd) it saves the shell's folder. For a Windows Terminal window it saves each tab's program and, for a
+[wezterm](https://wezterm.org) window it also saves the working directory of each pane. For a console shell (pwsh,
+Windows PowerShell or cmd) it saves the shell's folder. For a Windows Terminal window it saves each tab's program and, for a
 shell tab, its folder. PowerShell's `cd` changes only PowerShell's own location, not its process's folder, so a
 PowerShell console or tab reopens in the folder it started in. To have it reopen where you last `cd`'d, add this
 line to the `prompt` function in your PowerShell profile (it is optional, and rallypoint works without it):
@@ -77,12 +77,12 @@ stops saving while Windows shuts down, so the apps closing one by one never over
 2. Windows of saved programs that a GlazeWM `wm-exit` left hidden and unmanaged are shown again and handed back to
    GlazeWM, instead of being started a second time.
 3. Open windows are matched to saved ones, and the rest are launched. A wezterm window is matched by its first pane's
-   folder and reopened there, resuming its Claude Code session if it had one. Any other program is matched by its
-   executable and launched once with its saved command line, since a second launch of most apps opens a stray window
-   instead of restoring the saved ones. A shell is matched by its folder and reopened there in a console of its own,
-   one per window, without its saved arguments, so a window opened to run one command does not run it again.
-   A Windows Terminal window is matched by its tabs and reopened with `wt.exe -w new`, one tab per saved tab in the
-   order they were opened, each shell tab in its folder and without its saved arguments.
+   folder and reopened there. Any other program is matched by its executable and launched once with its saved command
+   line, since a second launch of most apps opens a stray window instead of restoring the saved ones. A shell is
+   matched by its folder and reopened there in a console of its own, one per window, without its saved arguments, so
+   a window opened to run one command does not run it again. A Windows Terminal window is matched by its tabs and
+   reopened with `wt.exe -w new`, one tab per saved tab in the order they were opened, each shell tab in its folder
+   and without its saved arguments.
 4. Each window is moved to its saved workspace and state. Windows that are already right are left alone.
 5. The workspace each monitor showed is shown again, and the one that had focus gets it back.
 
