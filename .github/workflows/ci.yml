@@ -13,14 +13,14 @@ jobs:
   lint:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: ./scripts/lint.ps1
         shell: pwsh
 
   unit-tests:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: ./scripts/unit-tests.ps1
         shell: pwsh
 
@@ -31,7 +31,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: ./scripts/release.ps1 -Tag $env:TAG -Token $env:TOKEN
         shell: pwsh
         env:
