@@ -1,4 +1,5 @@
-//! Which Claude Code session a terminal pane shows, found from the title Claude Code gives the terminal.
+//! Which Claude Code session a terminal pane shows, found from the title Claude Code gives the terminal, and the
+//! command that resumes it.
 
 use std::cmp::Reverse;
 use std::fs;
@@ -64,6 +65,11 @@ pub fn session_id(
         }
     }
     Ok(None)
+}
+
+/// The command a terminal runs to reopen session `session_id`.
+pub fn resume_command(session_id: &str) -> String {
+    format!("pwsh -NoLogo -Command claude --resume {session_id}")
 }
 
 /// The title without the status glyph Claude Code puts in front of it (an idle star or a busy spinner).

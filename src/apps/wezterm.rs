@@ -1,4 +1,4 @@
-//! Panes of a wezterm-gui window. Every wezterm-gui process runs its own mux behind
+//! wezterm windows: their panes, and the launch that reopens one. Every wezterm-gui process runs its own mux behind
 //! `<owner home>\.local\share\wezterm\gui-sock-<pid>`, so the CLI is pointed at that socket.
 
 use std::collections::BTreeSet;
@@ -8,11 +8,17 @@ use std::process::Command;
 use percent_encoding::percent_decode_str;
 use serde::Deserialize;
 
+use crate::apps::{claude_code, quoted};
 use crate::error::Error;
+use crate::model::{Pane, Resume};
+use crate::process::Process;
 
-pub struct Pane {
-    pub cwd: PathBuf,
-    pub title: String,
+pub const PROCESS_NAME: &str = "wezterm-gui";
+
+/// A pane as wezterm reports it. The title is Claude Code's session title when the pane runs it.
+struct LivePane {
+    cwd: PathBuf,
+    title: String,
 }
 
 #[derive(Deserialize)]
@@ -22,12 +28,39 @@ struct ListedPane {
     title: String,
 }
 
-pub fn socket(owner_home: &Path, pid: u32) -> PathBuf {
+/// The panes of the wezterm window `process` draws, each with the Claude Code session it shows.
+pub fn saved_panes(owner_home: &Path, process: &Process) -> Result<Vec<Pane>, Error> {
+    panes(&socket(owner_home, process.pid), process.pid)?
+        .into_iter()
+        .map(|pane| {
+            let resume = claude_code::session_id(owner_home, &pane.cwd, &pane.title)?
+                .map(|session_id| Resume::ClaudeCode { session_id });
+            Ok(Pane {
+                program: None,
+                command_line: None,
+                cwd: Some(pane.cwd),
+                resume,
+            })
+        })
+        .collect()
+}
+
+/// `wezterm-gui.exe` arguments opening a window in `cwd` that resumes `resume`.
+pub fn launch_arguments(cwd: &Path, resume: Option<&Resume>) -> String {
+    let resume = resume
+        .map(|Resume::ClaudeCode { session_id }| {
+            format!(" -- {}", claude_code::resume_command(session_id))
+        })
+        .unwrap_or_default();
+    format!("start --cwd {}{resume}", quoted(cwd))
+}
+
+fn socket(owner_home: &Path, pid: u32) -> PathBuf {
     owner_home.join(format!(r".local\share\wezterm\gui-sock-{pid}"))
 }
 
 /// The panes of wezterm-gui process `pid`, which must hold a single window.
-pub fn panes(socket: &Path, pid: u32) -> Result<Vec<Pane>, Error> {
+fn panes(socket: &Path, pid: u32) -> Result<Vec<LivePane>, Error> {
     let output = Command::new("wezterm")
         .args(["cli", "list", "--format", "json"])
         .env("WEZTERM_UNIX_SOCKET", socket)
@@ -51,7 +84,7 @@ pub fn panes(socket: &Path, pid: u32) -> Result<Vec<Pane>, Error> {
     single_window(listed, pid)
 }
 
-fn single_window(listed: Vec<ListedPane>, pid: u32) -> Result<Vec<Pane>, Error> {
+fn single_window(listed: Vec<ListedPane>, pid: u32) -> Result<Vec<LivePane>, Error> {
     let windows: BTreeSet<u64> = listed.iter().map(|pane| pane.window_id).collect();
     if windows.len() > 1 {
         return Err(Error::WeztermWindows {
@@ -62,7 +95,7 @@ fn single_window(listed: Vec<ListedPane>, pid: u32) -> Result<Vec<Pane>, Error> 
     listed
         .into_iter()
         .map(|pane| {
-            Ok(Pane {
+            Ok(LivePane {
                 cwd: local_path(&pane.cwd)?,
                 title: pane.title,
             })

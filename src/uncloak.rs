@@ -15,8 +15,9 @@ use windows::Win32::System::Com::{
 use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, IsWindowVisible};
 use windows::core::{BOOL, GUID, HRESULT, IUnknown, IUnknown_Vtbl, Interface, interface};
 
+use crate::capture::Sources;
 use crate::error::Error;
-use crate::session::{SavedWindow, Sources};
+use crate::model::SavedWindow;
 
 /// `DWM_CLOAKED_SHELL`, the cloak GlazeWM puts on windows of a hidden workspace.
 const CLOAKED_SHELL: u32 = 2;

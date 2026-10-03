@@ -1,6 +1,6 @@
 //! Test data shared across modules. Every value is neutral: a fixture never comes from a real session.
 
-use crate::session::{AppState, SavedWindow, WindowState};
+use crate::model::{AppState, SavedWindow, WindowState};
 
 /// A tiling program window on workspace `1`. Tests override the fields they are about.
 pub fn window(process_name: &str, executable_path: Option<&str>) -> SavedWindow {

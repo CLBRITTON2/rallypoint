@@ -15,9 +15,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, w};
 
+use crate::capture::capture;
 use crate::error::Error;
 use crate::glazewm::{Client, Event};
-use crate::session::{self, SavedWindow};
+use crate::model::{SavedWindow, same_windows};
+use crate::store;
 
 /// A burst of events (a restore, a workspace switch) gives one save this long after its last event.
 const DEBOUNCE: Duration = Duration::from_secs(2);
@@ -104,14 +106,13 @@ pub fn watch(folder: &Path) -> Result<(), Error> {
 
 /// Captures and writes a session unless it is empty or holds the same windows as `last`. Returns the windows written.
 fn save(folder: &Path, last: Option<&[SavedWindow]>) -> Result<Option<Vec<SavedWindow>>, Error> {
-    let captured = session::capture()?;
-    if captured.windows.is_empty()
-        || last.is_some_and(|last| session::same_windows(last, &captured.windows))
+    let captured = capture()?;
+    if captured.windows.is_empty() || last.is_some_and(|last| same_windows(last, &captured.windows))
     {
         return Ok(None);
     }
-    let path = session::write(folder, &captured)?;
-    session::prune(folder, KEEP)?;
+    let path = store::write(folder, &captured)?;
+    store::prune(folder, KEEP)?;
     println!("{}", path.display());
     Ok(Some(captured.windows))
 }
