@@ -5,8 +5,8 @@ use std::net::TcpStream;
 use std::sync::mpsc::Sender;
 use std::thread;
 
+use serde::Deserialize;
 use serde::de::{DeserializeOwned, IgnoredAny};
-use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
@@ -41,17 +41,12 @@ pub struct Window {
     pub title: String,
     pub class_name: String,
     pub process_name: String,
-    pub state: WindowState,
+    pub state: State,
 }
 
-#[derive(Deserialize, Clone)]
-pub struct WindowState {
-    #[serde(rename = "type")]
-    pub kind: State,
-}
-
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
-#[serde(rename_all = "snake_case")]
+/// GlazeWM's `WindowState`, by its tag alone: the floating and fullscreen settings beside it are ignored.
+#[derive(Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum State {
     Tiling,
     Floating,

@@ -9,7 +9,10 @@ release go under `## [Unreleased]`, renamed to the version when it is tagged.
 - `rallypoint list` prints every saved session, newest first, with its age, window count and workspace count.
 - `rallypoint restore <path>` brings back the session at that path, so a bad save no longer hides the one before it.
 - Sessions record the workspace shown on each monitor and the focused one, and `restore` shows and focuses them
-  again. Sessions saved by 0.1.0 restore without changing the focus.
+  again.
+- Sessions carry a format version, and `restore` and `list` refuse a session of any other version with an error
+  naming both. Sessions saved by 0.1.0 have none, so the first `save` after upgrading is the oldest one that
+  restores.
 - pwsh, Windows PowerShell and cmd windows reopen in their saved folder, one console per window. A PowerShell
   console's folder is the one it started in, since `cd` does not change it. The README has an optional prompt line
   that makes it the folder of the last `cd`.

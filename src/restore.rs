@@ -21,8 +21,8 @@ use windows_core::{Owned, PCWSTR, PWSTR};
 use crate::error::Error;
 use crate::glazewm::{Client, Event};
 use crate::session::{
-    Focus, LiveWindow, SavedTab, SavedWindow, Session, Sources, WINDOWS_TERMINAL, is_shell,
-    program_name,
+    AppState, Focus, LiveWindow, Pane, Resume, SavedWindow, Session, Sources, WINDOWS_TERMINAL,
+    is_shell, program_name,
 };
 use crate::uncloak;
 
@@ -49,7 +49,7 @@ enum Key {
         owner: String,
         cwd: Option<PathBuf>,
     },
-    /// A Windows Terminal window, by who runs it and its tabs. No tabs is a session saved before tabs were recorded,
+    /// A Windows Terminal window, by who runs it and its tabs. No tabs is a window save found no tab shells in,
     /// matching any.
     WindowsTerminal { owner: String, tabs: Vec<TabKey> },
     /// Any other window, by its program. Its windows are told apart only by order.
@@ -257,7 +257,9 @@ fn place(sources: &mut Sources, saved: &SavedWindow, target: &LiveWindow) -> Res
             .move_to_workspace(&target.id, &saved.workspace)?;
     }
     if target.window.state != saved.state {
-        sources.glazewm().set_state(&target.id, saved.state)?;
+        sources
+            .glazewm()
+            .set_state(&target.id, saved.state.into())?;
     }
     Ok(())
 }
@@ -317,37 +319,42 @@ fn key(window: &SavedWindow) -> Result<Key, &'static str> {
         .executable_path
         .as_ref()
         .ok_or("no executable path, a protected process")?;
-    if window.process_name == "wezterm-gui" {
-        let pane = window.panes.first().ok_or("wezterm window without panes")?;
-        return Ok(Key::Terminal {
-            executable_path: executable_path.clone(),
+    match (&window.app, window.process_name.as_str()) {
+        (AppState::Terminal { panes }, WINDOWS_TERMINAL) => Ok(Key::WindowsTerminal {
             owner: window.owner.clone(),
-            cwd: pane.cwd.clone(),
-        });
-    }
-    if window.process_name == WINDOWS_TERMINAL {
-        return Ok(Key::WindowsTerminal {
-            owner: window.owner.clone(),
-            tabs: window
-                .tabs
+            tabs: panes
                 .iter()
-                .map(|tab| TabKey {
-                    executable_path: tab.executable_path.clone(),
-                    cwd: tab.cwd.clone(),
+                .map(|pane| TabKey {
+                    executable_path: pane.program.clone(),
+                    cwd: pane.cwd.clone(),
                 })
                 .collect(),
-        });
-    }
-    if is_shell(&window.process_name) {
-        return Ok(Key::Shell {
+        }),
+        (AppState::Terminal { panes }, _) => {
+            let pane = panes.first().ok_or("terminal window without panes")?;
+            Ok(Key::Terminal {
+                executable_path: executable_path.clone(),
+                owner: window.owner.clone(),
+                cwd: pane.cwd.clone().ok_or("terminal pane without a folder")?,
+            })
+        }
+        (AppState::Shell { cwd }, _) => Ok(Key::Shell {
             executable_path: executable_path.clone(),
             owner: window.owner.clone(),
-            cwd: window.cwd.clone(),
-        });
+            cwd: cwd.clone(),
+        }),
+        (AppState::Program, _) => Ok(Key::Program {
+            executable_path: executable_path.clone(),
+        }),
     }
-    Ok(Key::Program {
-        executable_path: executable_path.clone(),
-    })
+}
+
+/// The panes of a terminal window, none for any other window.
+fn panes(window: &SavedWindow) -> &[Pane] {
+    match &window.app {
+        AppState::Terminal { panes } => panes,
+        AppState::Shell { .. } | AppState::Program => &[],
+    }
 }
 
 /// The key of a window restore can launch, or why it cannot. A packaged app is matched when open but never launched.
@@ -421,11 +428,12 @@ fn launch(window: &SavedWindow, key: &Key) -> Launch {
             owner,
             cwd,
         } => {
-            let resume = window
-                .panes
+            let resume = panes(window)
                 .first()
-                .and_then(|pane| pane.claude_session_id.as_ref())
-                .map(|id| format!(" -- pwsh -NoLogo -Command claude --resume {id}"))
+                .and_then(|pane| pane.resume.as_ref())
+                .map(|Resume::ClaudeCode { session_id }| {
+                    format!(" -- pwsh -NoLogo -Command claude --resume {session_id}")
+                })
                 .unwrap_or_default();
             Launch {
                 owner: owner.clone(),
@@ -438,7 +446,7 @@ fn launch(window: &SavedWindow, key: &Key) -> Launch {
         Key::WindowsTerminal { owner, .. } => Launch {
             owner: owner.clone(),
             program: "wt.exe".to_string(),
-            arguments: wt_arguments(&window.tabs),
+            arguments: wt_arguments(panes(window)),
             start: Start::Detached,
         },
         // Without the saved arguments, so a window opened to run one command (a -Command) does not run it again.
@@ -468,11 +476,11 @@ fn launch(window: &SavedWindow, key: &Key) -> Launch {
 
 /// wt.exe arguments opening one new window holding `tabs`. A shell tab runs its program alone, so a tab opened to run
 /// one command does not run it again. A tab with neither program nor command line is left out.
-fn wt_arguments(tabs: &[SavedTab]) -> String {
+fn wt_arguments(tabs: &[Pane]) -> String {
     let opened: Vec<String> = tabs
         .iter()
         .filter_map(|tab| {
-            let path = tab.executable_path.as_deref();
+            let path = tab.program.as_deref();
             let command = match (path, tab.command_line.as_deref()) {
                 (Some(path), _) if is_shell(&program_name(path)) => format!("\"{path}\""),
                 (_, Some(command_line)) => command_line.to_string(),
@@ -606,7 +614,6 @@ fn spawn_as(launch: &Launch) -> Result<(), Error> {
 mod tests {
     use super::*;
     use crate::fixtures;
-    use crate::session::SavedPane;
 
     fn program(path: &str, command_line: &str) -> SavedWindow {
         SavedWindow {
@@ -616,12 +623,16 @@ mod tests {
     }
 
     fn terminal(cwd: &str, claude_session_id: Option<&str>) -> SavedWindow {
+        let pane = Pane {
+            program: None,
+            command_line: None,
+            cwd: Some(PathBuf::from(cwd)),
+            resume: claude_session_id.map(|session_id| Resume::ClaudeCode {
+                session_id: session_id.to_string(),
+            }),
+        };
         SavedWindow {
-            panes: vec![SavedPane {
-                cwd: PathBuf::from(cwd),
-                title: String::new(),
-                claude_session_id: claude_session_id.map(str::to_string),
-            }],
+            app: AppState::Terminal { panes: vec![pane] },
             ..fixtures::window(
                 "wezterm-gui",
                 Some(r"C:\Program Files\WezTerm\wezterm-gui.exe"),
@@ -631,15 +642,17 @@ mod tests {
 
     fn shell(cwd: Option<&str>) -> SavedWindow {
         SavedWindow {
-            cwd: cwd.map(PathBuf::from),
+            app: AppState::Shell {
+                cwd: cwd.map(PathBuf::from),
+            },
             command_line: Some("pwsh -NoExit -Command app".to_string()),
             ..fixtures::window("pwsh", Some(PWSH))
         }
     }
 
-    fn windows_terminal(tabs: Vec<SavedTab>) -> SavedWindow {
+    fn windows_terminal(tabs: Vec<Pane>) -> SavedWindow {
         SavedWindow {
-            tabs,
+            app: AppState::Terminal { panes: tabs },
             ..fixtures::window(
                 WINDOWS_TERMINAL,
                 Some(
@@ -649,11 +662,12 @@ mod tests {
         }
     }
 
-    fn tab(path: &str, command_line: &str, cwd: Option<&str>) -> SavedTab {
-        SavedTab {
-            executable_path: Some(path.to_string()),
+    fn tab(path: &str, command_line: &str, cwd: Option<&str>) -> Pane {
+        Pane {
+            program: Some(path.to_string()),
             command_line: Some(command_line.to_string()),
             cwd: cwd.map(PathBuf::from),
+            resume: None,
         }
     }
 
@@ -691,7 +705,7 @@ mod tests {
     }
 
     #[test]
-    fn assign_matches_windows_terminal_by_tabs_and_an_old_session_by_owner() {
+    fn assign_matches_windows_terminal_by_tabs_and_a_tabless_window_by_owner() {
         let at = |cwd: &str| windows_terminal(vec![tab(PWSH, "pwsh", Some(cwd))]);
         let saved = vec![at(r"C:\a"), windows_terminal(Vec::new()), at(r"C:\c")];
         let open = vec![live(at(r"C:\b")), live(at(r"C:\a"))];

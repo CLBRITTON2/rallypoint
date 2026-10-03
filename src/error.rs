@@ -160,8 +160,20 @@ pub enum Error {
         #[source]
         source: serde_json::Error,
     },
+    #[error(
+        "the session {path:?} has format version {}, but this rallypoint reads only version {expected}. Run \
+         rallypoint save for a session it can restore",
+        .found.map_or_else(|| "none".to_string(), |found| found.to_string())
+    )]
+    SessionVersion {
+        path: PathBuf,
+        found: Option<u32>,
+        expected: u32,
+    },
     #[error("encoding the session failed: {0}")]
     Encode(#[source] serde_json::Error),
     #[error("the system clock is before 1970: {0}")]
     Clock(#[source] std::time::SystemTimeError),
+    #[error("the system clock is past the year 584 million: {0}")]
+    ClockRange(#[source] std::num::TryFromIntError),
 }

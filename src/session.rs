@@ -14,14 +14,24 @@ use crate::process::{Process, Processes};
 use crate::tabs::{self, Tab};
 use crate::wezterm;
 
+/// The session format `capture` writes and `read` accepts. Bump it on any change an older rallypoint could misread,
+/// since a session of another version is refused rather than migrated.
+pub const VERSION: u32 = 1;
+
 #[derive(Serialize, Deserialize)]
 pub struct Session {
+    pub version: u32,
     /// Unix milliseconds.
-    pub saved_at: u128,
-    /// Sessions saved before focus was recorded load with none, and restore then leaves the focus alone.
-    #[serde(default)]
+    pub saved_at: u64,
     pub focus: Focus,
     pub windows: Vec<SavedWindow>,
+}
+
+/// The part of a session file read before the rest, so a session of another version fails on its version instead
+/// of on whichever field changed. Sessions saved before versioning have none.
+#[derive(Deserialize)]
+struct Header {
+    version: Option<u32>,
 }
 
 /// Which workspaces were on screen.
@@ -41,31 +51,73 @@ pub struct SavedWindow {
     pub owner: String,
     pub title: String,
     pub class_name: String,
-    pub state: State,
-    /// Only a console shell window has a folder, and only when it could be read.
-    pub cwd: Option<PathBuf>,
-    /// Only wezterm-gui windows have panes.
-    pub panes: Vec<SavedPane>,
-    /// Only Windows Terminal windows have tabs, oldest first. Sessions saved before tabs were recorded load with none.
-    #[serde(default)]
-    pub tabs: Vec<SavedTab>,
+    pub state: WindowState,
+    pub app: AppState,
 }
 
-/// A Windows Terminal tab, by the program it runs.
+/// rallypoint's copy of a GlazeWM window state, so the session format does not change with GlazeWM's IPC types.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowState {
+    Tiling,
+    Floating,
+    Minimized,
+    Fullscreen,
+}
+
+impl From<State> for WindowState {
+    fn from(state: State) -> WindowState {
+        match state {
+            State::Tiling => WindowState::Tiling,
+            State::Floating => WindowState::Floating,
+            State::Minimized => WindowState::Minimized,
+            State::Fullscreen => WindowState::Fullscreen,
+        }
+    }
+}
+
+impl From<WindowState> for State {
+    fn from(state: WindowState) -> State {
+        match state {
+            WindowState::Tiling => State::Tiling,
+            WindowState::Floating => State::Floating,
+            WindowState::Minimized => State::Minimized,
+            WindowState::Fullscreen => State::Fullscreen,
+        }
+    }
+}
+
+/// What reopening a window needs beyond its program.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
-pub struct SavedTab {
-    /// None for a protected process.
-    pub executable_path: Option<String>,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AppState {
+    Program,
+    /// A console shell. None is a folder save could not read.
+    Shell {
+        cwd: Option<PathBuf>,
+    },
+    /// A terminal window: a wezterm window's panes or a Windows Terminal window's tabs, oldest first.
+    Terminal {
+        panes: Vec<Pane>,
+    },
+}
+
+/// One wezterm pane or Windows Terminal tab.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct Pane {
+    /// The program the pane runs. None for a wezterm pane, and for a tab running a protected process.
+    pub program: Option<String>,
     pub command_line: Option<String>,
-    /// Only a shell has a folder, and only when it could be read.
+    /// None for a tab that is not a shell, and for a shell whose folder could not be read.
     pub cwd: Option<PathBuf>,
+    pub resume: Option<Resume>,
 }
 
+/// A program session a pane reopens into.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
-pub struct SavedPane {
-    pub cwd: PathBuf,
-    pub title: String,
-    pub claude_session_id: Option<String>,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Resume {
+    ClaudeCode { session_id: String },
 }
 
 /// An open window: what a save records of it, and the GlazeWM container ID that commands it.
@@ -105,22 +157,21 @@ impl Sources {
         for workspace in self.glazewm.workspaces()? {
             for window in workspace.windows() {
                 let process = self.processes.of_window(window.handle)?;
-                let panes = match window.process_name.as_str() {
-                    "wezterm-gui" => saved_panes(&self.profiles.join(&process.owner), &process)?,
-                    _ => Vec::new(),
-                };
-                let cwd = if is_shell(&window.process_name) {
-                    cwd::of_process(process.pid)?
-                } else {
-                    None
-                };
-                let tabs = match window.process_name.as_str() {
-                    WINDOWS_TERMINAL => self.saved_tabs(&tab_shells, window.handle)?,
-                    _ => Vec::new(),
+                let app = match window.process_name.as_str() {
+                    "wezterm-gui" => AppState::Terminal {
+                        panes: wezterm_panes(&self.profiles.join(&process.owner), &process)?,
+                    },
+                    WINDOWS_TERMINAL => AppState::Terminal {
+                        panes: self.tabs(&tab_shells, window.handle)?,
+                    },
+                    name if is_shell(name) => AppState::Shell {
+                        cwd: cwd::of_process(process.pid)?,
+                    },
+                    _ => AppState::Program,
                 };
                 windows.push(LiveWindow {
                     id: window.id.clone(),
-                    window: saved_window(&workspace.name, window, process, cwd, panes, tabs),
+                    window: saved_window(&workspace.name, window, process, app),
                 });
             }
         }
@@ -128,7 +179,7 @@ impl Sources {
     }
 
     /// The tabs of the Windows Terminal window `handle`, among `tab_shells`, oldest first.
-    fn saved_tabs(&self, tab_shells: &[Tab], handle: isize) -> Result<Vec<SavedTab>, Error> {
+    fn tabs(&self, tab_shells: &[Tab], handle: isize) -> Result<Vec<Pane>, Error> {
         let pids: Vec<u32> = tab_shells
             .iter()
             .filter(|tab| tab.window == handle)
@@ -142,13 +193,14 @@ impl Sources {
                     .executable_path
                     .as_deref()
                     .is_some_and(|path| is_shell(&program_name(path)));
-                Ok(SavedTab {
+                Ok(Pane {
                     cwd: match is_shell_tab {
                         true => cwd::of_process(process.process_id)?,
                         false => None,
                     },
-                    executable_path: process.executable_path,
+                    program: process.executable_path,
                     command_line: process.command_line,
+                    resume: None,
                 })
             })
             .collect()
@@ -163,6 +215,7 @@ pub fn capture() -> Result<Session, Error> {
     let mut sources = Sources::connect()?;
     let windows = sources.live_windows()?;
     Ok(Session {
+        version: VERSION,
         saved_at: now()?,
         focus: sources.focus()?,
         windows: windows.into_iter().map(|live| live.window).collect(),
@@ -184,11 +237,11 @@ fn focus_of(workspaces: &[Workspace]) -> Focus {
 }
 
 /// The current time in Unix milliseconds, the unit of `saved_at`.
-pub fn now() -> Result<u128, Error> {
-    Ok(SystemTime::now()
+pub fn now() -> Result<u64, Error> {
+    let since_epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(Error::Clock)?
-        .as_millis())
+        .map_err(Error::Clock)?;
+    u64::try_from(since_epoch.as_millis()).map_err(Error::ClockRange)
 }
 
 /// Every session file in `folder`, oldest first.
@@ -197,7 +250,7 @@ fn saved_paths(folder: &Path) -> Result<Vec<PathBuf>, Error> {
         path: folder.to_path_buf(),
         source,
     };
-    let mut saved: Vec<(u128, PathBuf)> = Vec::new();
+    let mut saved: Vec<(u64, PathBuf)> = Vec::new();
     for entry in fs::read_dir(folder).map_err(read_error)? {
         let path = entry.map_err(read_error)?.path();
         if path.extension().is_none_or(|extension| extension != "json") {
@@ -206,7 +259,7 @@ fn saved_paths(folder: &Path) -> Result<Vec<PathBuf>, Error> {
         let saved_at = path
             .file_stem()
             .and_then(|stem| stem.to_str())
-            .and_then(|stem| stem.parse::<u128>().ok())
+            .and_then(|stem| stem.parse::<u64>().ok())
             .ok_or_else(|| Error::SessionName { path: path.clone() })?;
         saved.push((saved_at, path));
     }
@@ -232,14 +285,23 @@ pub fn read(path: &Path) -> Result<Session, Error> {
         path: path.to_path_buf(),
         source,
     })?;
-    serde_json::from_str(&text).map_err(|source| Error::Decode {
+    let decode_error = |source| Error::Decode {
         path: path.to_path_buf(),
         source,
-    })
+    };
+    let header: Header = serde_json::from_str(&text).map_err(decode_error)?;
+    if header.version != Some(VERSION) {
+        return Err(Error::SessionVersion {
+            path: path.to_path_buf(),
+            found: header.version,
+            expected: VERSION,
+        });
+    }
+    serde_json::from_str(&text).map_err(decode_error)
 }
 
 /// How long before `now` a session saved at `saved_at` was written, in its largest whole unit, as `12 min ago`.
-pub fn age(saved_at: u128, now: u128) -> String {
+pub fn age(saved_at: u64, now: u64) -> String {
     let seconds = now.saturating_sub(saved_at) / 1000;
     match seconds {
         0..60 => format!("{seconds} s ago"),
@@ -260,14 +322,7 @@ pub fn workspace_count(windows: &[SavedWindow]) -> usize {
     names.len()
 }
 
-fn saved_window(
-    workspace: &str,
-    window: Window,
-    process: Process,
-    cwd: Option<PathBuf>,
-    panes: Vec<SavedPane>,
-    tabs: Vec<SavedTab>,
-) -> SavedWindow {
+fn saved_window(workspace: &str, window: Window, process: Process, app: AppState) -> SavedWindow {
     SavedWindow {
         workspace: workspace.to_string(),
         process_name: window.process_name,
@@ -276,10 +331,8 @@ fn saved_window(
         owner: process.owner,
         title: window.title,
         class_name: window.class_name,
-        state: window.state.kind,
-        cwd,
-        panes,
-        tabs,
+        state: window.state.into(),
+        app,
     }
 }
 
@@ -298,15 +351,18 @@ pub fn program_name(executable_path: &str) -> String {
 
 pub const WINDOWS_TERMINAL: &str = "WindowsTerminal";
 
-fn saved_panes(owner_home: &Path, process: &Process) -> Result<Vec<SavedPane>, Error> {
+fn wezterm_panes(owner_home: &Path, process: &Process) -> Result<Vec<Pane>, Error> {
     let socket = wezterm::socket(owner_home, process.pid);
     wezterm::panes(&socket, process.pid)?
         .into_iter()
         .map(|pane| {
-            Ok(SavedPane {
-                claude_session_id: claude::session_id(owner_home, &pane.cwd, &pane.title)?,
-                cwd: pane.cwd,
-                title: pane.title,
+            let resume = claude::session_id(owner_home, &pane.cwd, &pane.title)?
+                .map(|session_id| Resume::ClaudeCode { session_id });
+            Ok(Pane {
+                program: None,
+                command_line: None,
+                cwd: Some(pane.cwd),
+                resume,
             })
         })
         .collect()
@@ -358,7 +414,7 @@ pub fn prune(folder: &Path, keep: usize) -> Result<(), Error> {
 }
 
 /// Whether two saves hold the same windows, ignoring titles: a title changes with every page or command and needs
-/// no new save, while a Claude session change shows up in `claude_session_id`.
+/// no new save, while a Claude session change shows up in a pane's `resume`.
 pub fn same_windows(a: &[SavedWindow], b: &[SavedWindow]) -> bool {
     untitled(a) == untitled(b)
 }
@@ -368,14 +424,6 @@ fn untitled(windows: &[SavedWindow]) -> Vec<SavedWindow> {
         .iter()
         .map(|window| SavedWindow {
             title: String::new(),
-            panes: window
-                .panes
-                .iter()
-                .map(|pane| SavedPane {
-                    title: String::new(),
-                    ..pane.clone()
-                })
-                .collect(),
             ..window.clone()
         })
         .collect()
@@ -390,20 +438,16 @@ mod tests {
         SavedWindow {
             workspace: workspace.to_string(),
             title: title.to_string(),
-            panes: vec![SavedPane {
-                cwd: PathBuf::from(r"C:\work\project"),
-                title: title.to_string(),
-                claude_session_id: None,
-            }],
-            ..fixtures::window("wezterm-gui", None)
+            ..fixtures::window("app", None)
         }
     }
 
-    fn sessions_saved_at(folder: &Path, saved_at: &[u128]) -> Result<(), Error> {
+    fn sessions_saved_at(folder: &Path, saved_at: &[u64]) -> Result<(), Error> {
         for &saved_at in saved_at {
             write(
                 folder,
                 &Session {
+                    version: VERSION,
                     saved_at,
                     focus: Focus::default(),
                     windows: Vec::new(),
@@ -435,20 +479,64 @@ mod tests {
     }
 
     #[test]
-    fn a_session_without_focus_loads_with_none() -> Result<(), serde_json::Error> {
-        let session: Session = serde_json::from_str(r#"{"saved_at":1,"windows":[]}"#)?;
-        assert_eq!(session.focus, Focus::default());
+    fn read_refuses_a_session_of_another_version() -> Result<(), Box<dyn std::error::Error>> {
+        let folder = tempfile::tempdir()?;
+        let unversioned = folder.path().join("1.json");
+        fs::write(&unversioned, r#"{"saved_at":1,"windows":[]}"#)?;
+        let newer = folder.path().join("2.json");
+        fs::write(
+            &newer,
+            r#"{"version":99,"saved_at":2,"focus":{},"windows":[{}]}"#,
+        )?;
+        assert!(matches!(
+            read(&unversioned),
+            Err(Error::SessionVersion {
+                found: None,
+                expected: VERSION,
+                ..
+            })
+        ));
+        assert!(matches!(
+            read(&newer),
+            Err(Error::SessionVersion {
+                found: Some(99),
+                expected: VERSION,
+                ..
+            })
+        ));
         Ok(())
     }
 
     #[test]
-    fn a_window_without_cwd_loads_with_none() -> Result<(), serde_json::Error> {
-        let window: SavedWindow = serde_json::from_str(
-            r#"{"workspace":"1","process_name":"pwsh","executable_path":null,"command_line":null,"owner":"o",
-                "title":"","class_name":"","state":"tiling","panes":[]}"#,
-        )?;
-        assert_eq!(window.cwd, None);
-        assert_eq!(window.tabs, Vec::new());
+    fn a_written_session_reads_back() -> Result<(), Box<dyn std::error::Error>> {
+        let folder = tempfile::tempdir()?;
+        let pane = Pane {
+            program: Some(r"C:\tools\shell.exe".to_string()),
+            command_line: None,
+            cwd: Some(PathBuf::from(r"C:\work\project")),
+            resume: Some(Resume::ClaudeCode {
+                session_id: "id".to_string(),
+            }),
+        };
+        let windows = vec![
+            fixtures::window("app", Some(r"C:\tools\app.exe")),
+            SavedWindow {
+                app: AppState::Shell { cwd: None },
+                state: WindowState::Floating,
+                ..fixtures::window("shell", None)
+            },
+            SavedWindow {
+                app: AppState::Terminal { panes: vec![pane] },
+                ..fixtures::window("terminal", None)
+            },
+        ];
+        let session = Session {
+            version: VERSION,
+            saved_at: 7,
+            focus: Focus::default(),
+            windows: windows.clone(),
+        };
+        assert_eq!(read(&write(folder.path(), &session)?)?.windows, windows);
         Ok(())
     }
 
