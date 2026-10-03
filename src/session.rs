@@ -384,25 +384,33 @@ fn untitled(windows: &[SavedWindow]) -> Vec<SavedWindow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixtures;
 
     fn window(title: &str, workspace: &str) -> SavedWindow {
         SavedWindow {
             workspace: workspace.to_string(),
-            process_name: "wezterm-gui".to_string(),
-            executable_path: None,
-            command_line: None,
-            owner: "owner".to_string(),
             title: title.to_string(),
-            class_name: "c".to_string(),
-            state: State::Tiling,
-            cwd: None,
             panes: vec![SavedPane {
-                cwd: PathBuf::from(r"C:\x"),
+                cwd: PathBuf::from(r"C:\work\project"),
                 title: title.to_string(),
                 claude_session_id: None,
             }],
-            tabs: Vec::new(),
+            ..fixtures::window("wezterm-gui", None)
         }
+    }
+
+    fn sessions_saved_at(folder: &Path, saved_at: &[u128]) -> Result<(), Error> {
+        for &saved_at in saved_at {
+            write(
+                folder,
+                &Session {
+                    saved_at,
+                    focus: Focus::default(),
+                    windows: Vec::new(),
+                },
+            )?;
+        }
+        Ok(())
     }
 
     #[test]
@@ -471,41 +479,20 @@ mod tests {
 
     #[test]
     fn newest_first_reverses_save_order() -> Result<(), Box<dyn std::error::Error>> {
-        let folder = std::env::temp_dir().join(format!("rallypoint-newest-{}", std::process::id()));
-        for saved_at in [3, 10, 2] {
-            write(
-                &folder,
-                &Session {
-                    saved_at,
-                    focus: Focus::default(),
-                    windows: Vec::new(),
-                },
-            )?;
-        }
-        let listed = newest_first(&folder)?;
-        fs::remove_dir_all(&folder)?;
-        let names = ["10.json", "3.json", "2.json"].map(|name| folder.join(name));
-        assert_eq!(listed, names);
+        let folder = tempfile::tempdir()?;
+        sessions_saved_at(folder.path(), &[3, 10, 2])?;
+        let names = ["10.json", "3.json", "2.json"].map(|name| folder.path().join(name));
+        assert_eq!(newest_first(folder.path())?, names);
         Ok(())
     }
 
     #[test]
     fn prune_keeps_the_newest() -> Result<(), Box<dyn std::error::Error>> {
-        let folder = std::env::temp_dir().join(format!("rallypoint-prune-{}", std::process::id()));
-        for saved_at in [3, 10, 2] {
-            write(
-                &folder,
-                &Session {
-                    saved_at,
-                    focus: Focus::default(),
-                    windows: Vec::new(),
-                },
-            )?;
-        }
-        prune(&folder, 2)?;
-        let left: Vec<PathBuf> = saved_paths(&folder)?;
-        fs::remove_dir_all(&folder)?;
-        assert_eq!(left, vec![folder.join("3.json"), folder.join("10.json")]);
+        let folder = tempfile::tempdir()?;
+        sessions_saved_at(folder.path(), &[3, 10, 2])?;
+        prune(folder.path(), 2)?;
+        let left = vec![folder.path().join("3.json"), folder.path().join("10.json")];
+        assert_eq!(saved_paths(folder.path())?, left);
         Ok(())
     }
 }

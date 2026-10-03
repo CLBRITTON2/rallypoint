@@ -125,7 +125,10 @@ mod tests {
 
     #[test]
     fn folder_drops_the_trailing_backslash_but_a_root_keeps_it() {
-        assert_eq!(folder(r"C:\work\project\"), PathBuf::from(r"C:\work\project"));
+        assert_eq!(
+            folder(r"C:\work\project\"),
+            PathBuf::from(r"C:\work\project")
+        );
         assert_eq!(folder(r"C:\"), PathBuf::from(r"C:\"));
         assert_eq!(
             folder(r"\\server\share\x"),

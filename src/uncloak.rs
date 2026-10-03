@@ -182,23 +182,7 @@ fn uncloak(handles: &[isize]) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::glazewm::State;
-
-    fn saved(executable_path: &str) -> SavedWindow {
-        SavedWindow {
-            workspace: "1".to_string(),
-            process_name: "app".to_string(),
-            executable_path: Some(executable_path.to_string()),
-            command_line: None,
-            owner: "owner".to_string(),
-            title: String::new(),
-            class_name: String::new(),
-            state: State::Tiling,
-            cwd: None,
-            panes: Vec::new(),
-            tabs: Vec::new(),
-        }
-    }
+    use crate::fixtures;
 
     fn hidden(handle: isize, executable_path: Option<&str>) -> Hidden {
         Hidden {
@@ -210,12 +194,12 @@ mod tests {
     #[test]
     fn to_uncloak_takes_unmanaged_windows_of_saved_programs_only() {
         let windows = vec![
-            hidden(1, Some(r"C:\wezterm-gui.exe")),
-            hidden(2, Some(r"C:\wezterm-gui.exe")),
+            hidden(1, Some(r"C:\tools\app.exe")),
+            hidden(2, Some(r"C:\tools\app.exe")),
             hidden(3, Some(r"C:\tools\other.exe")),
             hidden(4, None),
         ];
-        let saved = vec![saved(r"C:\wezterm-gui.exe")];
+        let saved = vec![fixtures::window("app", Some(r"C:\tools\app.exe"))];
         let handles: Vec<isize> = to_uncloak(&windows, &[2], &saved)
             .iter()
             .map(|window| window.handle)
@@ -225,10 +209,7 @@ mod tests {
 
     #[test]
     fn to_uncloak_never_matches_a_protected_process() {
-        let protected = SavedWindow {
-            executable_path: None,
-            ..saved("")
-        };
+        let protected = fixtures::window("app", None);
         assert!(to_uncloak(&[hidden(1, None)], &[], &[protected]).is_empty());
     }
 }

@@ -26,7 +26,7 @@ use crate::session::{
 };
 use crate::uncloak;
 
-/// How long launched windows get to appear. A Claude Code window started through `runas` takes a few seconds.
+/// How long launched windows get to appear. A window started through `runas` takes a few seconds.
 const WAIT: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_secs(1);
 /// Windows count as settled once GlazeWM has managed none for this long.
@@ -605,63 +605,46 @@ fn spawn_as(launch: &Launch) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::glazewm::State;
+    use crate::fixtures;
     use crate::session::SavedPane;
 
     fn program(path: &str, command_line: &str) -> SavedWindow {
         SavedWindow {
-            workspace: "1".to_string(),
-            process_name: "app".to_string(),
-            executable_path: Some(path.to_string()),
             command_line: Some(command_line.to_string()),
-            owner: "owner".to_string(),
-            title: String::new(),
-            class_name: String::new(),
-            state: State::Tiling,
-            cwd: None,
-            panes: Vec::new(),
-            tabs: Vec::new(),
+            ..fixtures::window("app", Some(path))
         }
     }
 
     fn terminal(cwd: &str, claude_session_id: Option<&str>) -> SavedWindow {
         SavedWindow {
-            workspace: "2".to_string(),
-            process_name: "wezterm-gui".to_string(),
-            executable_path: Some(r"C:\Program Files\WezTerm\wezterm-gui.exe".to_string()),
-            command_line: None,
-            owner: "owner".to_string(),
-            title: String::new(),
-            class_name: String::new(),
-            state: State::Tiling,
-            cwd: None,
             panes: vec![SavedPane {
                 cwd: PathBuf::from(cwd),
                 title: String::new(),
                 claude_session_id: claude_session_id.map(str::to_string),
             }],
-            tabs: Vec::new(),
+            ..fixtures::window(
+                "wezterm-gui",
+                Some(r"C:\Program Files\WezTerm\wezterm-gui.exe"),
+            )
         }
     }
 
     fn shell(cwd: Option<&str>) -> SavedWindow {
         SavedWindow {
-            process_name: "pwsh".to_string(),
             cwd: cwd.map(PathBuf::from),
-            ..program(
-                r"C:\Program Files\PowerShell\7\pwsh.exe",
-                "pwsh -NoExit -Command app",
-            )
+            command_line: Some("pwsh -NoExit -Command app".to_string()),
+            ..fixtures::window("pwsh", Some(PWSH))
         }
     }
 
     fn windows_terminal(tabs: Vec<SavedTab>) -> SavedWindow {
         SavedWindow {
-            process_name: WINDOWS_TERMINAL.to_string(),
             tabs,
-            ..program(
-                r"C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1\WindowsTerminal.exe",
-                "",
+            ..fixtures::window(
+                WINDOWS_TERMINAL,
+                Some(
+                    r"C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1\WindowsTerminal.exe",
+                ),
             )
         }
     }
@@ -686,11 +669,7 @@ mod tests {
                     Some(r"C:\a;b"),
                 ),
                 tab(r"C:\WINDOWS\system32\cmd.exe", "cmd", None),
-                tab(
-                    r"C:\WINDOWS\system32\wsl.exe",
-                    "wsl.exe -- ls;ls",
-                    None,
-                ),
+                tab(r"C:\tools\app.exe", "app.exe a;b", None),
             ]),
             windows_terminal(Vec::new()),
         ];
@@ -702,7 +681,7 @@ mod tests {
             planned,
             vec![
                 (
-                    r#""wt.exe" -w new new-tab -d "C:\a\;b" "C:\Program Files\PowerShell\7\pwsh.exe" ; new-tab "C:\WINDOWS\system32\cmd.exe" ; new-tab wsl.exe -- ls\;ls"#
+                    r#""wt.exe" -w new new-tab -d "C:\a\;b" "C:\Program Files\PowerShell\7\pwsh.exe" ; new-tab "C:\WINDOWS\system32\cmd.exe" ; new-tab app.exe a\;b"#
                         .to_string(),
                     vec![0]
                 ),
@@ -721,8 +700,15 @@ mod tests {
 
     #[test]
     fn assign_matches_a_shell_by_folder_and_an_unread_folder_by_program() {
-        let saved = vec![shell(Some(r"C:\work\project")), shell(None), shell(Some(r"C:\a"))];
-        let open = vec![live(shell(Some(r"C:\b"))), live(shell(Some(r"C:\work\project")))];
+        let saved = vec![
+            shell(Some(r"C:\work\project")),
+            shell(None),
+            shell(Some(r"C:\a")),
+        ];
+        let open = vec![
+            live(shell(Some(r"C:\b"))),
+            live(shell(Some(r"C:\work\project"))),
+        ];
         assert_eq!(assign(&saved, &open), vec![Some(1), Some(0), None]);
     }
 

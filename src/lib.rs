@@ -3,6 +3,8 @@
 pub mod claude;
 pub mod cwd;
 pub mod error;
+#[cfg(test)]
+mod fixtures;
 pub mod glazewm;
 pub mod process;
 pub mod restore;

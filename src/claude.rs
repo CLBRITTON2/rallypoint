@@ -105,14 +105,8 @@ mod tests {
 
     #[test]
     fn strip_status_drops_a_leading_glyph() {
-        assert_eq!(
-            strip_status("✳ Example title"),
-            "Example title"
-        );
-        assert_eq!(
-            strip_status("◐ Example title"),
-            "Example title"
-        );
+        assert_eq!(strip_status("✳ Example title"), "Example title");
+        assert_eq!(strip_status("◐ Example title"), "Example title");
     }
 
     #[test]
