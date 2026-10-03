@@ -17,7 +17,7 @@ use windows::core::{BOOL, GUID, HRESULT, IUnknown, IUnknown_Vtbl, Interface, int
 
 use crate::capture::Sources;
 use crate::error::Error;
-use crate::model::SavedWindow;
+use crate::model::{ExePath, SavedWindow};
 
 /// `DWM_CLOAKED_SHELL`, the cloak GlazeWM puts on windows of a hidden workspace.
 const CLOAKED_SHELL: u32 = 2;
@@ -55,7 +55,7 @@ unsafe trait IApplicationView: IUnknown {
 #[derive(PartialEq, Debug)]
 struct Hidden {
     handle: isize,
-    executable_path: Option<String>,
+    executable_path: Option<ExePath>,
 }
 
 /// Uncloaks every hidden window GlazeWM does not manage whose program a saved window runs, and returns how many it
@@ -83,12 +83,16 @@ pub fn adopt(sources: &mut Sources, saved: &[SavedWindow]) -> Result<usize, Erro
     // The wmi crate puts the process in the MTA, and the shell's view collection wants an STA thread.
     thread::spawn(move || uncloak(&handles))
         .join()
-        .map_err(|_| Error::ThreadGone { thread: "uncloak" })??;
+        .map_err(|_panic| Error::ThreadPanicked { thread: "uncloak" })??;
     for window in &chosen {
         eprintln!(
             "rallypoint: uncloaked window handle {} of {}",
             window.handle,
-            window.executable_path.as_deref().unwrap_or_default()
+            window
+                .executable_path
+                .as_ref()
+                .map(ExePath::as_str)
+                .unwrap_or_default()
         );
     }
     Ok(chosen.len())
@@ -114,23 +118,26 @@ fn to_uncloak<'a>(
 /// Every visible top-level window with a shell cloak.
 fn shell_cloaked() -> Result<Vec<isize>, Error> {
     let mut handles: Vec<isize> = Vec::new();
+    // SAFETY: `collect_shell_cloaked` reads lparam as the `handles` it points to, which outlives the call.
     unsafe {
         EnumWindows(
             Some(collect_shell_cloaked),
             LPARAM(&raw mut handles as isize),
         )
     }
-    .map_err(|source| Error::Uncloak {
+    .map_err(|source| Error::Os {
         call: "EnumWindows",
-        handle: None,
+        context: "finding the cloaked windows".to_string(),
         source,
     })?;
     Ok(handles)
 }
 
 unsafe extern "system" fn collect_shell_cloaked(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    // SAFETY: `shell_cloaked` passes a live `Vec<isize>` as lparam, and EnumWindows calls back on its thread.
     let handles = unsafe { &mut *(lparam.0 as *mut Vec<isize>) };
     let mut cloaked: u32 = 0;
+    // SAFETY: `cloaked` is a live local of the size passed, which bounds the write.
     let read = unsafe {
         DwmGetWindowAttribute(
             hwnd,
@@ -139,7 +146,9 @@ unsafe extern "system" fn collect_shell_cloaked(hwnd: HWND, lparam: LPARAM) -> B
             size_of::<u32>() as u32,
         )
     };
-    if unsafe { IsWindowVisible(hwnd) }.as_bool() && read.is_ok() && cloaked == CLOAKED_SHELL {
+    // SAFETY: takes the handle EnumWindows passed, by value.
+    let visible = unsafe { IsWindowVisible(hwnd) }.as_bool();
+    if visible && read.is_ok() && cloaked == CLOAKED_SHELL {
         handles.push(hwnd.0 as isize);
     }
     BOOL(1)
@@ -147,35 +156,44 @@ unsafe extern "system" fn collect_shell_cloaked(hwnd: HWND, lparam: LPARAM) -> B
 
 /// Clears the shell cloak of each window in `handles`, on the calling thread, which must not be in the MTA yet.
 fn uncloak(handles: &[isize]) -> Result<(), Error> {
-    let com_error = |call: &'static str, handle: Option<isize>| {
-        move |source| Error::Uncloak {
+    let com_error = |call: &'static str, context: String| {
+        move |source| Error::Os {
             call,
-            handle,
+            context,
             source,
         }
     };
+    let setup = || "opening the shell's application views".to_string();
+    let of_window = |handle: isize| format!("uncloaking window handle {handle}");
+    // SAFETY: the caller runs this on a thread with no apartment yet, uninitialized below.
     unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }
         .ok()
-        .map_err(com_error("CoInitializeEx", None))?;
+        .map_err(com_error("CoInitializeEx", setup()))?;
     let result = (|| {
+        // SAFETY: COM is initialized on this thread, and the CLSID is a static.
         let provider: IServiceProvider =
             unsafe { CoCreateInstance(&CLSID_IMMERSIVE_SHELL, None, CLSCTX_ALL) }
-                .map_err(com_error("CoCreateInstance(ImmersiveShell)", None))?;
+                .map_err(com_error("CoCreateInstance(ImmersiveShell)", setup()))?;
+        // SAFETY: `provider` is a live interface, and the IID matches the interface asked for.
         let views: IApplicationViewCollection =
-            unsafe { provider.QueryService(&IApplicationViewCollection::IID) }
-                .map_err(com_error("QueryService(IApplicationViewCollection)", None))?;
+            unsafe { provider.QueryService(&IApplicationViewCollection::IID) }.map_err(
+                com_error("QueryService(IApplicationViewCollection)", setup()),
+            )?;
         for &handle in handles {
             let mut view: Option<IApplicationView> = None;
+            // SAFETY: the vtable slot matches GlazeWM's declaration, and `view` is a live local it writes.
             unsafe { views.get_view_for_hwnd(handle, &raw mut view) }
                 .ok()
-                .map_err(com_error("GetViewForHwnd", Some(handle)))?;
+                .map_err(com_error("GetViewForHwnd", of_window(handle)))?;
             let view = view.ok_or(Error::NoView { handle })?;
+            // SAFETY: the vtable slot matches GlazeWM's declaration, and `view` is a live interface.
             unsafe { view.set_cloak(1, 0) }
                 .ok()
-                .map_err(com_error("SetCloak", Some(handle)))?;
+                .map_err(com_error("SetCloak", of_window(handle)))?;
         }
         Ok(())
     })();
+    // SAFETY: pairs the CoInitializeEx above, after every interface on this thread is dropped.
     unsafe { CoUninitialize() };
     result
 }
@@ -188,7 +206,7 @@ mod tests {
     fn hidden(handle: isize, executable_path: Option<&str>) -> Hidden {
         Hidden {
             handle,
-            executable_path: executable_path.map(str::to_string),
+            executable_path: executable_path.map(|path| ExePath::new(path.to_string())),
         }
     }
 

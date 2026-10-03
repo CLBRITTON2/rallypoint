@@ -2,10 +2,6 @@ use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error(
-        "usage: rallypoint save | rallypoint list | rallypoint restore [<session path>] | rallypoint watch, got {0:?}"
-    )]
-    Usage(Vec<String>),
     #[error("connecting to GlazeWM at {url} failed, is it running? {source}")]
     GlazeConnect {
         url: &'static str,
@@ -44,15 +40,15 @@ pub enum Error {
     },
     #[error("process {pid} of window handle {handle} exited during the save")]
     ProcessGone { pid: u32, handle: isize },
-    #[error("{call} failed while reading the working directory of process {pid}: {source}")]
-    Cwd {
-        pid: u32,
+    #[error("{call} failed while {context}: {source}")]
+    Os {
         call: &'static str,
+        context: String,
         #[source]
         source: windows::core::Error,
     },
-    #[error("EnumWindows failed while finding the Windows Terminal tabs: {0}")]
-    Tabs(#[source] windows::core::Error),
+    #[error("the name of the account rallypoint runs as is not valid UTF-16: {0}")]
+    AccountName(#[source] std::string::FromUtf16Error),
     #[error("GetOwner of process {pid} returned {code}")]
     Owner { pid: u32, code: u32 },
     #[error("the environment variable {name} is not set")]
@@ -62,12 +58,6 @@ pub enum Error {
         program: &'static str,
         #[source]
         source: std::io::Error,
-    },
-    #[error("{call} failed while keeping rallypoint's output from launched programs: {source}")]
-    Inherit {
-        call: &'static str,
-        #[source]
-        source: windows::core::Error,
     },
     #[error("launching {command_line} failed: {source}")]
     Launch {
@@ -80,7 +70,7 @@ pub enum Error {
          run it once in a terminal to save one"
     )]
     Runas {
-        owner: String,
+        owner: crate::model::Owner,
         command_line: String,
         code: Option<i32>,
         output: String,
@@ -101,6 +91,12 @@ pub enum Error {
     WeztermWindows { pid: u32, windows: usize },
     #[error("the pane cwd {cwd:?} is not a local file URI")]
     PaneCwd { cwd: String },
+    #[error("the pane cwd {cwd:?} is not UTF-8 once decoded: {source}")]
+    PaneCwdEncoding {
+        cwd: String,
+        #[source]
+        source: std::str::Utf8Error,
+    },
     #[error("reading {path:?} failed: {source}")]
     Read {
         path: PathBuf,
@@ -125,25 +121,14 @@ pub enum Error {
         #[source]
         source: std::io::Error,
     },
-    #[error("{call} failed while opening the shutdown window: {source}")]
-    Window {
-        call: &'static str,
-        #[source]
-        source: windows::core::Error,
-    },
-    #[error("{call} failed while uncloaking window handle {handle:?}: {source}")]
-    Uncloak {
-        call: &'static str,
-        handle: Option<isize>,
-        #[source]
-        source: windows::core::Error,
-    },
     #[error(
         "the shell has no application view for window handle {handle}, so it cannot be uncloaked"
     )]
     NoView { handle: isize },
     #[error("the {thread} thread stopped without reporting why")]
     ThreadGone { thread: &'static str },
+    #[error("the {thread} thread panicked")]
+    ThreadPanicked { thread: &'static str },
     #[error("{failures} saves in a row failed, the last with: {source}")]
     SavesFailing {
         failures: u32,
@@ -170,8 +155,12 @@ pub enum Error {
         found: Option<u32>,
         expected: u32,
     },
-    #[error("encoding the session failed: {0}")]
-    Encode(#[source] serde_json::Error),
+    #[error("encoding the session for {path:?} failed: {source}")]
+    Encode {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
     #[error("the system clock is before 1970: {0}")]
     Clock(#[source] std::time::SystemTimeError),
     #[error("the system clock is past the year 584 million: {0}")]

@@ -14,34 +14,38 @@ use windows::Win32::System::Threading::{
 use windows_core::{Owned, PCWSTR, PWSTR};
 
 use crate::error::Error;
+use crate::model::Owner;
 use crate::plan::{Launch, Start};
 
 /// Makes rallypoint's stdout and stderr non-inheritable. `Command` spawns with handle inheritance on, so a launched
 /// app would otherwise hold a pipe handed to rallypoint open for as long as it runs, and a shell redirecting the
 /// report (the startup `restore *> log; watch`) would wait on it before starting `watch`.
 pub fn keep_output_from_launches() -> Result<(), Error> {
-    for id in [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
-        let handle = unsafe { GetStdHandle(id) }.map_err(|source| Error::Inherit {
-            call: "GetStdHandle",
+    let inherit_error = |call: &'static str| {
+        move |source| Error::Os {
+            call,
+            context: "keeping rallypoint's output from launched programs".to_string(),
             source,
-        })?;
+        }
+    };
+    for id in [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        // SAFETY: plain call with a standard handle id. The handle it returns is borrowed, never closed.
+        let handle = unsafe { GetStdHandle(id) }.map_err(inherit_error("GetStdHandle"))?;
         // No handle to leak when rallypoint runs without that stream.
         if handle.is_invalid() {
             continue;
         }
-        unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0)) }.map_err(
-            |source| Error::Inherit {
-                call: "SetHandleInformation",
-                source,
-            },
-        )?;
+        // SAFETY: `handle` is this process's live standard handle, checked valid above.
+        unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0)) }
+            .map_err(inherit_error("SetHandleInformation"))?;
     }
     Ok(())
 }
 
-/// Starts `launch` without waiting for it.
-pub fn spawn(launch: &Launch, user: &str) -> Result<(), Error> {
-    if !launch.owner.eq_ignore_ascii_case(user) {
+/// Starts `launch` without waiting for it. `user` is the account rallypoint runs as, so another owner's launch goes
+/// through `runas`.
+pub fn spawn(launch: &Launch, user: &Owner) -> Result<(), Error> {
+    if launch.owner != *user {
         return spawn_as(launch);
     }
     match &launch.start {
@@ -77,6 +81,8 @@ fn spawn_console(launch: &Launch, cwd: Option<&Path>) -> Result<(), Error> {
         ..Default::default()
     };
     let mut started = PROCESS_INFORMATION::default();
+    // SAFETY: the command line is a mutable null-terminated buffer, as CreateProcessW requires, and the folder is
+    // null-terminated. Every buffer outlives the call.
     unsafe {
         CreateProcessW(
             PCWSTR::null(),
@@ -97,7 +103,10 @@ fn spawn_console(launch: &Launch, cwd: Option<&Path>) -> Result<(), Error> {
         command_line,
         source: source.into(),
     })?;
-    drop(unsafe { (Owned::new(started.hProcess), Owned::new(started.hThread)) });
+    // SAFETY: CreateProcessW returned this handle, and nothing else closes it.
+    drop(unsafe { Owned::new(started.hProcess) });
+    // SAFETY: CreateProcessW returned this handle, and nothing else closes it.
+    drop(unsafe { Owned::new(started.hThread) });
     Ok(())
 }
 

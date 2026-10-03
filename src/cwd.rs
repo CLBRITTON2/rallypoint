@@ -16,6 +16,11 @@ use windows_core::Owned;
 
 use crate::error::Error;
 
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!(
+    "cwd reads the 64-bit process parameters layout, so rallypoint builds for 64-bit only"
+);
+
 /// Offset of `CurrentDirectory.DosPath` in a 64-bit `RTL_USER_PROCESS_PARAMETERS`, inside the part the SDK declares
 /// as reserved.
 /// https://www.geoffchappell.com/studies/windows/km/ntoskrnl/inc/api/pebteb/rtl_user_process_parameters.htm
@@ -33,6 +38,7 @@ struct RemoteString {
 /// The working directory of process `pid`, or None when this account may not read it: an elevated process, or one
 /// of another account.
 pub fn of_process(pid: u32) -> Result<Option<PathBuf>, Error> {
+    // SAFETY: plain call with flags and a pid, returning an owned handle wrapped below.
     let opened = unsafe {
         OpenProcess(
             PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
@@ -41,17 +47,13 @@ pub fn of_process(pid: u32) -> Result<Option<PathBuf>, Error> {
         )
     };
     let process = match opened {
+        // SAFETY: OpenProcess returned this handle, and nothing else closes it.
         Ok(handle) => unsafe { Owned::new(handle) },
         Err(error) if error.code() == E_ACCESSDENIED => return Ok(None),
-        Err(source) => {
-            return Err(Error::Cwd {
-                pid,
-                call: "OpenProcess",
-                source,
-            });
-        }
+        Err(source) => return Err(cwd_error(pid, "OpenProcess")(source)),
     };
     let mut basic = PROCESS_BASIC_INFORMATION::default();
+    // SAFETY: `basic` is a live local of the size passed, which bounds the write.
     unsafe {
         NtQueryInformationProcess(
             *process,
@@ -62,11 +64,7 @@ pub fn of_process(pid: u32) -> Result<Option<PathBuf>, Error> {
         )
     }
     .ok()
-    .map_err(|source| Error::Cwd {
-        pid,
-        call: "NtQueryInformationProcess",
-        source,
-    })?;
+    .map_err(cwd_error(pid, "NtQueryInformationProcess"))?;
     let parameters: usize = read(
         *process,
         pid,
@@ -74,6 +72,7 @@ pub fn of_process(pid: u32) -> Result<Option<PathBuf>, Error> {
     )?;
     let dos_path: RemoteString = read(*process, pid, parameters + CURRENT_DIRECTORY)?;
     let mut wide = vec![0u16; usize::from(dos_path.length) / 2];
+    // SAFETY: `wide` holds `length` bytes, which bounds the write. The source address is in the other process.
     unsafe {
         ReadProcessMemory(
             *process,
@@ -83,16 +82,14 @@ pub fn of_process(pid: u32) -> Result<Option<PathBuf>, Error> {
             None,
         )
     }
-    .map_err(|source| Error::Cwd {
-        pid,
-        call: "ReadProcessMemory",
-        source,
-    })?;
-    Ok(Some(folder(&OsString::from_wide(&wide).to_string_lossy())))
+    .map_err(cwd_error(pid, "ReadProcessMemory"))?;
+    Ok(Some(folder(&wide)))
 }
 
+/// Reads a `T` at `address` in `process`. `T` must be plain data, valid for any bytes.
 fn read<T: Default>(process: HANDLE, pid: u32, address: usize) -> Result<T, Error> {
     let mut value = T::default();
+    // SAFETY: `value` is a live local of `size_of::<T>()` bytes, which bounds the write.
     unsafe {
         ReadProcessMemory(
             process,
@@ -102,20 +99,28 @@ fn read<T: Default>(process: HANDLE, pid: u32, address: usize) -> Result<T, Erro
             None,
         )
     }
-    .map_err(|source| Error::Cwd {
-        pid,
-        call: "ReadProcessMemory",
-        source,
-    })?;
+    .map_err(cwd_error(pid, "ReadProcessMemory"))?;
     Ok(value)
 }
 
-/// A DOS path without the trailing backslash Windows keeps on a working directory, except a drive root's, since
-/// `C:` alone means that drive's current folder.
-fn folder(dos_path: &str) -> PathBuf {
-    match dos_path.strip_suffix('\\') {
-        Some(trimmed) if !trimmed.ends_with(':') => PathBuf::from(trimmed),
-        _ => PathBuf::from(dos_path),
+fn cwd_error(pid: u32, call: &'static str) -> impl FnOnce(windows::core::Error) -> Error {
+    move |source| Error::Os {
+        call,
+        context: format!("reading the working directory of process {pid}"),
+        source,
+    }
+}
+
+/// A UTF-16 DOS path without the trailing backslash Windows keeps on a working directory, except a drive root's,
+/// since `C:` alone means that drive's current folder.
+fn folder(dos_path: &[u16]) -> PathBuf {
+    let backslash = u16::from(b'\\');
+    let colon = u16::from(b':');
+    match dos_path.split_last() {
+        Some((&last, trimmed)) if last == backslash && trimmed.last() != Some(&colon) => {
+            PathBuf::from(OsString::from_wide(trimmed))
+        }
+        _ => PathBuf::from(OsString::from_wide(dos_path)),
     }
 }
 
@@ -123,15 +128,19 @@ fn folder(dos_path: &str) -> PathBuf {
 mod tests {
     use super::*;
 
+    fn folder_of(dos_path: &str) -> PathBuf {
+        folder(&dos_path.encode_utf16().collect::<Vec<u16>>())
+    }
+
     #[test]
     fn folder_drops_the_trailing_backslash_but_a_root_keeps_it() {
         assert_eq!(
-            folder(r"C:\work\project\"),
+            folder_of(r"C:\work\project\"),
             PathBuf::from(r"C:\work\project")
         );
-        assert_eq!(folder(r"C:\"), PathBuf::from(r"C:\"));
+        assert_eq!(folder_of(r"C:\"), PathBuf::from(r"C:\"));
         assert_eq!(
-            folder(r"\\server\share\x"),
+            folder_of(r"\\server\share\x"),
             PathBuf::from(r"\\server\share\x")
         );
     }

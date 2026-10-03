@@ -7,13 +7,22 @@ use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 use wmi::{WMIConnection, WMIDateTime};
 
 use crate::error::Error;
+use crate::model::{ExePath, Owner};
 
 pub struct Process {
     pub pid: u32,
     /// None for a protected process.
-    pub executable_path: Option<String>,
+    pub executable_path: Option<ExePath>,
     pub command_line: Option<String>,
-    pub owner: String,
+    pub owner: Owner,
+}
+
+/// A process found by pid, without its owner.
+pub struct Started {
+    pub pid: u32,
+    /// None for a protected process.
+    pub executable_path: Option<ExePath>,
+    pub command_line: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -28,11 +37,11 @@ struct Win32Process {
 /// A process and when it started.
 #[derive(Deserialize)]
 #[serde(rename = "Win32_Process", rename_all = "PascalCase")]
-pub struct Started {
-    pub process_id: u32,
-    pub executable_path: Option<String>,
-    pub command_line: Option<String>,
-    pub creation_date: WMIDateTime,
+struct Win32Started {
+    process_id: u32,
+    executable_path: Option<String>,
+    command_line: Option<String>,
+    creation_date: WMIDateTime,
 }
 
 #[derive(Deserialize)]
@@ -68,16 +77,20 @@ impl Processes {
         };
         Ok(Process {
             pid,
-            executable_path: process.executable_path,
+            executable_path: process.executable_path.map(ExePath::new),
             command_line: process.command_line,
-            owner: user,
+            owner: Owner::new(user),
         })
     }
 
     /// The executable of the process behind `handle`, without its owner: `GetOwner` fails for system processes,
     /// which own some of the windows this is asked about. None for a protected process.
-    pub fn executable_path_of_window(&self, handle: isize) -> Result<Option<String>, Error> {
-        Ok(self.win32_process(handle)?.1.executable_path)
+    pub fn executable_path_of_window(&self, handle: isize) -> Result<Option<ExePath>, Error> {
+        Ok(self
+            .win32_process(handle)?
+            .1
+            .executable_path
+            .map(ExePath::new))
     }
 
     /// The processes in `pids` still running, oldest first.
@@ -93,16 +106,25 @@ impl Processes {
             "SELECT ProcessId, ExecutablePath, CommandLine, CreationDate FROM Win32_Process WHERE {}",
             filter.join(" OR ")
         );
-        let mut found: Vec<Started> = self.wmi.raw_query(&query).map_err(|source| Error::Wmi {
-            query: query.clone(),
-            source,
-        })?;
+        let mut found: Vec<Win32Started> =
+            self.wmi.raw_query(&query).map_err(|source| Error::Wmi {
+                query: query.clone(),
+                source,
+            })?;
         found.sort_by_key(|process| process.creation_date);
-        Ok(found)
+        Ok(found
+            .into_iter()
+            .map(|process| Started {
+                pid: process.process_id,
+                executable_path: process.executable_path.map(ExePath::new),
+                command_line: process.command_line,
+            })
+            .collect())
     }
 
     fn win32_process(&self, handle: isize) -> Result<(u32, Win32Process), Error> {
         let mut pid = 0;
+        // SAFETY: `pid` is a live local the call writes once. A stale handle leaves it 0, checked below.
         unsafe { GetWindowThreadProcessId(HWND(handle as _), Some(&mut pid)) };
         if pid == 0 {
             return Err(Error::NoProcess { handle });

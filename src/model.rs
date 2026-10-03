@@ -1,5 +1,6 @@
 //! A saved session: every GlazeWM window, the workspace it sits on, and what relaunching it needs.
 
+use std::fmt;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -31,13 +32,76 @@ pub struct Focus {
 pub struct SavedWindow {
     pub workspace: String,
     pub process_name: String,
-    pub executable_path: Option<String>,
+    pub executable_path: Option<ExePath>,
     pub command_line: Option<String>,
-    pub owner: String,
+    pub owner: Owner,
     pub title: String,
     pub class_name: String,
     pub state: WindowState,
     pub app: AppState,
+}
+
+/// An executable path, equal to another regardless of case, as Windows resolves paths.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(transparent)]
+pub struct ExePath(String);
+
+impl ExePath {
+    pub fn new(path: String) -> ExePath {
+        ExePath(path)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Whether the executable sits in a packaged app's install folder, which cannot be started directly.
+    pub fn is_packaged(&self) -> bool {
+        self.0.to_lowercase().contains(r"\windowsapps\")
+    }
+}
+
+impl PartialEq for ExePath {
+    fn eq(&self, other: &ExePath) -> bool {
+        caseless_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Display for ExePath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// A Windows account name, equal to another regardless of case, as Windows matches account names.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(transparent)]
+pub struct Owner(String);
+
+impl Owner {
+    pub fn new(name: String) -> Owner {
+        Owner(name)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl PartialEq for Owner {
+    fn eq(&self, other: &Owner) -> bool {
+        caseless_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Display for Owner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+fn caseless_eq(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
 }
 
 /// rallypoint's copy of a GlazeWM window state, so the session format does not change with GlazeWM's IPC types.
@@ -91,7 +155,7 @@ pub enum AppState {
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct Pane {
     /// The program the pane runs. None for a wezterm pane, and for a tab running a protected process.
-    pub program: Option<String>,
+    pub program: Option<ExePath>,
     pub command_line: Option<String>,
     /// None for a tab that is not a shell, and for a shell whose folder could not be read.
     pub cwd: Option<PathBuf>,
@@ -138,5 +202,23 @@ mod tests {
     fn same_windows_ignores_titles_only() {
         assert!(same_windows(&[window("a", "1")], &[window("b", "1")]));
         assert!(!same_windows(&[window("a", "1")], &[window("a", "2")]));
+    }
+
+    #[test]
+    fn exe_paths_and_owners_compare_regardless_of_case() {
+        let path = |path: &str| ExePath::new(path.to_string());
+        assert_eq!(path(r"C:\Tools\App.exe"), path(r"c:\tools\app.EXE"));
+        assert_ne!(path(r"C:\tools\app.exe"), path(r"C:\tools\other.exe"));
+        assert_eq!(
+            Owner::new("Owner".to_string()),
+            Owner::new("owner".to_string())
+        );
+    }
+
+    #[test]
+    fn is_packaged_ignores_case() {
+        let packaged = ExePath::new(r"C:\Program Files\windowsapps\Example_1\app.exe".to_string());
+        assert!(packaged.is_packaged());
+        assert!(!ExePath::new(r"C:\tools\app.exe".to_string()).is_packaged());
     }
 }

@@ -141,23 +141,31 @@ fn listen_for_shutdown(signals: Sender<Signal>) {
 }
 
 fn run_shutdown_window() -> Result<(), Error> {
-    let window_error = |call| move |source| Error::Window { call, source };
-    // SAFETY: plain Win32 calls with valid arguments. The class name and title are static strings.
-    unsafe {
-        let instance =
-            GetModuleHandleW(PCWSTR::null()).map_err(window_error("GetModuleHandleW"))?;
-        let class = w!("rallypoint-watch");
-        let window_class = WNDCLASSW {
-            lpfnWndProc: Some(on_message),
-            hInstance: instance.into(),
-            lpszClassName: class,
-            ..Default::default()
-        };
-        if RegisterClassW(&window_class) == 0 {
-            return Err(window_error("RegisterClassW")(
-                windows::core::Error::from_thread(),
-            ));
+    let window_error = |call| {
+        move |source| Error::Os {
+            call,
+            context: "opening the shutdown window".to_string(),
+            source,
         }
+    };
+    // SAFETY: a null name asks for this executable's module, which is never freed.
+    let instance =
+        unsafe { GetModuleHandleW(PCWSTR::null()) }.map_err(window_error("GetModuleHandleW"))?;
+    let class = w!("rallypoint-watch");
+    let window_class = WNDCLASSW {
+        lpfnWndProc: Some(on_message),
+        hInstance: instance.into(),
+        lpszClassName: class,
+        ..Default::default()
+    };
+    // SAFETY: the class name is a static string, and `on_message` has the window procedure signature.
+    if unsafe { RegisterClassW(&window_class) } == 0 {
+        return Err(window_error("RegisterClassW")(
+            windows::core::Error::from_thread(),
+        ));
+    }
+    // SAFETY: the class was registered above, and the class name and title are static strings.
+    unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
             class,
@@ -172,19 +180,21 @@ fn run_shutdown_window() -> Result<(), Error> {
             Some(instance.into()),
             None,
         )
-        .map_err(window_error("CreateWindowExW"))?;
-        let mut message = MSG::default();
-        loop {
-            match GetMessageW(&mut message, None, 0, 0).0 {
-                0 => return Ok(()),
-                -1 => {
-                    return Err(window_error("GetMessageW")(
-                        windows::core::Error::from_thread(),
-                    ));
-                }
-                _ => {
-                    DispatchMessageW(&message);
-                }
+    }
+    .map_err(window_error("CreateWindowExW"))?;
+    let mut message = MSG::default();
+    loop {
+        // SAFETY: `message` is a live local the call writes.
+        match unsafe { GetMessageW(&mut message, None, 0, 0) }.0 {
+            0 => return Ok(()),
+            -1 => {
+                return Err(window_error("GetMessageW")(
+                    windows::core::Error::from_thread(),
+                ));
+            }
+            _ => {
+                // SAFETY: `message` is the message GetMessageW just filled in.
+                unsafe { DispatchMessageW(&message) };
             }
         }
     }

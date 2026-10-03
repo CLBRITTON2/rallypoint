@@ -1,31 +1,54 @@
 //! Decides what a restore does with each saved window: which open window it already is, or what to launch for it.
 
+use std::fmt;
 use std::path::PathBuf;
 
 use crate::apps::{self, Kind, LaunchScope, wezterm, windows_terminal};
 use crate::capture::LiveWindow;
-use crate::model::{AppState, Pane, SavedWindow};
+use crate::model::{AppState, ExePath, Owner, Pane, SavedWindow};
 
 /// What tells an open window apart as the one a saved window was.
 #[derive(PartialEq, Debug)]
 pub enum Key {
     /// A wezterm-gui window, by who runs it and the folder of its first pane.
     Wezterm {
-        executable_path: String,
-        owner: String,
+        executable_path: ExePath,
+        owner: Owner,
         cwd: PathBuf,
     },
     /// A console shell, by who runs it and its folder. None is a folder save could not read, matching any.
     Shell {
-        executable_path: String,
-        owner: String,
+        executable_path: ExePath,
+        owner: Owner,
         cwd: Option<PathBuf>,
     },
     /// A Windows Terminal window, by who runs it and its tabs. No tabs is a window save found no tab shells in,
     /// matching any.
-    WindowsTerminal { owner: String, tabs: Vec<TabKey> },
+    WindowsTerminal { owner: Owner, tabs: Vec<TabKey> },
     /// Any other window, by its program. Its windows are told apart only by order.
-    Program { executable_path: String },
+    Program { executable_path: ExePath },
+}
+
+/// Why restore leaves a saved window alone.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum SkipReason {
+    Protected,
+    NoPanes,
+    PaneWithoutFolder,
+    StateMismatch,
+    Packaged,
+}
+
+impl fmt::Display for SkipReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            SkipReason::Protected => "no executable path, a protected process",
+            SkipReason::NoPanes => "terminal window without panes",
+            SkipReason::PaneWithoutFolder => "terminal pane without a folder",
+            SkipReason::StateMismatch => "saved app state does not match its program",
+            SkipReason::Packaged => "packaged app, its executable cannot be launched directly",
+        })
+    }
 }
 
 impl Key {
@@ -57,14 +80,14 @@ impl Key {
 
 #[derive(PartialEq, Debug)]
 pub struct TabKey {
-    executable_path: Option<String>,
+    executable_path: Option<ExePath>,
     cwd: Option<PathBuf>,
 }
 
 /// A program to start, as `owner`.
 #[derive(PartialEq, Debug)]
 pub struct Launch {
-    pub owner: String,
+    pub owner: Owner,
     pub program: String,
     /// Passed verbatim, so the saved command line's quoting survives.
     pub arguments: String,
@@ -87,11 +110,11 @@ impl Launch {
     }
 }
 
-fn key(window: &SavedWindow) -> Result<Key, &'static str> {
+fn key(window: &SavedWindow) -> Result<Key, SkipReason> {
     let executable_path = window
         .executable_path
         .as_ref()
-        .ok_or("no executable path, a protected process")?;
+        .ok_or(SkipReason::Protected)?;
     match (apps::kind_of(&window.process_name), &window.app) {
         (Kind::WindowsTerminal, AppState::Terminal { panes }) => Ok(Key::WindowsTerminal {
             owner: window.owner.clone(),
@@ -104,11 +127,11 @@ fn key(window: &SavedWindow) -> Result<Key, &'static str> {
                 .collect(),
         }),
         (Kind::Wezterm, AppState::Terminal { panes }) => {
-            let pane = panes.first().ok_or("terminal window without panes")?;
+            let pane = panes.first().ok_or(SkipReason::NoPanes)?;
             Ok(Key::Wezterm {
                 executable_path: executable_path.clone(),
                 owner: window.owner.clone(),
-                cwd: pane.cwd.clone().ok_or("terminal pane without a folder")?,
+                cwd: pane.cwd.clone().ok_or(SkipReason::PaneWithoutFolder)?,
             })
         }
         (Kind::Shell, AppState::Shell { cwd }) => Ok(Key::Shell {
@@ -119,7 +142,7 @@ fn key(window: &SavedWindow) -> Result<Key, &'static str> {
         (Kind::Program, AppState::Program) => Ok(Key::Program {
             executable_path: executable_path.clone(),
         }),
-        _ => Err("saved app state does not match its program"),
+        _ => Err(SkipReason::StateMismatch),
     }
 }
 
@@ -132,25 +155,49 @@ fn panes(window: &SavedWindow) -> &[Pane] {
 }
 
 /// The key of a window restore can launch, or why it cannot. A packaged app is matched when open but never launched.
-pub fn launch_key(window: &SavedWindow) -> Result<Key, &'static str> {
+pub fn launch_key(window: &SavedWindow) -> Result<Key, SkipReason> {
     let key = key(window)?;
     match &key {
-        Key::Program { executable_path } if executable_path.contains(r"\WindowsApps\") => {
-            Err("packaged app, its executable cannot be launched directly")
+        Key::Program { executable_path } if executable_path.is_packaged() => {
+            Err(SkipReason::Packaged)
         }
         _ => Ok(key),
     }
 }
 
-/// For each saved window, the index of the open window it is, in the session's order. An open window is claimed
-/// by the first saved window with its key.
+/// For each saved window, the index of the open window it is, in the session's order. Exact keys claim first, so a
+/// saved window whose key matches any (a shell with no folder) never takes the open window of one with a folder.
+/// Within a pass an open window goes to the first saved window it fits.
 pub fn assign(saved: &[SavedWindow], live: &[LiveWindow]) -> Vec<Option<usize>> {
+    let saved_keys: Vec<Option<Key>> = saved.iter().map(|window| key(window).ok()).collect();
     let live_keys: Vec<Option<Key>> = live.iter().map(|live| key(&live.window).ok()).collect();
-    let mut claimed = vec![false; live.len()];
-    saved
+    let exact = claim(
+        &saved_keys,
+        &live_keys,
+        &vec![None; saved.len()],
+        <Key as PartialEq>::eq,
+    );
+    claim(&saved_keys, &live_keys, &exact, Key::matches)
+}
+
+/// `assigned`, with each saved key not assigned yet given the first unclaimed open window that `fits` it.
+fn claim(
+    saved_keys: &[Option<Key>],
+    live_keys: &[Option<Key>],
+    assigned: &[Option<usize>],
+    fits: fn(&Key, &Key) -> bool,
+) -> Vec<Option<usize>> {
+    let mut claimed: Vec<bool> = (0..live_keys.len())
+        .map(|index| assigned.contains(&Some(index)))
+        .collect();
+    saved_keys
         .iter()
-        .map(|window| {
-            let wanted = key(window).ok()?;
+        .zip(assigned)
+        .map(|(wanted, assigned)| {
+            if assigned.is_some() {
+                return *assigned;
+            }
+            let wanted = wanted.as_ref()?;
             let index = live_keys
                 .iter()
                 .zip(&claimed)
@@ -158,7 +205,7 @@ pub fn assign(saved: &[SavedWindow], live: &[LiveWindow]) -> Vec<Option<usize>> 
                     !taken
                         && live_key
                             .as_ref()
-                            .is_some_and(|live_key| wanted.matches(live_key))
+                            .is_some_and(|live_key| fits(wanted, live_key))
                 })?;
             if let Some(taken) = claimed.get_mut(index) {
                 *taken = true;
@@ -205,7 +252,7 @@ fn launch(window: &SavedWindow, key: &Key) -> Launch {
             cwd,
         } => Launch {
             owner: owner.clone(),
-            program: executable_path.clone(),
+            program: executable_path.to_string(),
             arguments: wezterm::launch_arguments(
                 cwd,
                 panes(window).first().and_then(|pane| pane.resume.as_ref()),
@@ -226,13 +273,13 @@ fn launch(window: &SavedWindow, key: &Key) -> Launch {
             cwd,
         } => Launch {
             owner: owner.clone(),
-            program: executable_path.clone(),
+            program: executable_path.to_string(),
             arguments: String::new(),
             start: Start::Console { cwd: cwd.clone() },
         },
         Key::Program { executable_path } => Launch {
             owner: window.owner.clone(),
-            program: executable_path.clone(),
+            program: executable_path.to_string(),
             arguments: window
                 .command_line
                 .as_deref()
@@ -309,7 +356,7 @@ mod tests {
 
     fn tab(path: &str, command_line: &str, cwd: Option<&str>) -> Pane {
         Pane {
-            program: Some(path.to_string()),
+            program: Some(ExePath::new(path.to_string())),
             command_line: Some(command_line.to_string()),
             cwd: cwd.map(PathBuf::from),
             resume: None,
@@ -386,7 +433,7 @@ mod tests {
         let expected = |cwd: Option<&str>, index: usize| {
             (
                 Launch {
-                    owner: "owner".to_string(),
+                    owner: Owner::new("owner".to_string()),
                     program: program.clone(),
                     arguments: String::new(),
                     start: Start::Console {
@@ -465,12 +512,31 @@ mod tests {
             executable_path: None,
             ..program("", "")
         };
-        assert!(launch_key(&protected).is_err());
+        assert!(matches!(launch_key(&protected), Err(SkipReason::Protected)));
         let packaged = program(
-            r"C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1\wt.exe",
+            r"C:\Program Files\windowsapps\Microsoft.WindowsTerminal_1\wt.exe",
             "",
         );
-        assert!(launch_key(&packaged).is_err());
+        assert!(matches!(launch_key(&packaged), Err(SkipReason::Packaged)));
+        let paneless = SavedWindow {
+            app: AppState::Terminal { panes: Vec::new() },
+            ..terminal(r"C:\a", None)
+        };
+        assert!(matches!(launch_key(&paneless), Err(SkipReason::NoPanes)));
+    }
+
+    #[test]
+    fn assign_gives_exact_keys_their_window_before_wildcards() {
+        let saved = vec![shell(None), shell(Some(r"C:\work\project"))];
+        let open = vec![live(shell(Some(r"C:\work\project")))];
+        assert_eq!(assign(&saved, &open), vec![None, Some(0)]);
+    }
+
+    #[test]
+    fn assign_ignores_the_case_of_executable_paths() {
+        let saved = vec![program(r"C:\Tools\App.exe", "")];
+        let open = vec![live(program(r"c:\tools\app.exe", ""))];
+        assert_eq!(assign(&saved, &open), vec![Some(0)]);
     }
 
     #[test]

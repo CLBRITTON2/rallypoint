@@ -111,7 +111,10 @@ fn local_path(cwd: &str) -> Result<PathBuf, Error> {
     let encoded = cwd.strip_prefix("file:///").ok_or_else(not_local)?;
     let path = percent_decode_str(encoded)
         .decode_utf8()
-        .map_err(|_| not_local())?
+        .map_err(|source| Error::PaneCwdEncoding {
+            cwd: cwd.to_string(),
+            source,
+        })?
         .replace('/', "\\");
     Ok(PathBuf::from(path.trim_end_matches('\\')))
 }

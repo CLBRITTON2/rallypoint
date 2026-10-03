@@ -1,6 +1,7 @@
 //! The session files in `%LOCALAPPDATA%\rallypoint\sessions`, one `<saved_at>.json` per save.
 
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -24,14 +25,19 @@ pub fn now() -> Result<u64, Error> {
     u64::try_from(since_epoch.as_millis()).map_err(Error::ClockRange)
 }
 
-/// Every session file in `folder`, oldest first.
+/// Every session file in `folder`, oldest first. None when `folder` does not exist, as before the first save.
 fn saved_paths(folder: &Path) -> Result<Vec<PathBuf>, Error> {
     let read_error = |source| Error::Read {
         path: folder.to_path_buf(),
         source,
     };
+    let entries = match fs::read_dir(folder) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(read_error(error)),
+    };
     let mut saved: Vec<(u64, PathBuf)> = Vec::new();
-    for entry in fs::read_dir(folder).map_err(read_error)? {
+    for entry in entries {
         let path = entry.map_err(read_error)?.path();
         if path.extension().is_none_or(|extension| extension != "json") {
             continue;
@@ -98,7 +104,10 @@ pub fn write(folder: &Path, session: &Session) -> Result<PathBuf, Error> {
     fs::create_dir_all(folder).map_err(write_error(folder))?;
     let path = folder.join(format!("{}.json", session.saved_at));
     let temp = path.with_extension("json.tmp");
-    let json = serde_json::to_vec_pretty(session).map_err(Error::Encode)?;
+    let json = serde_json::to_vec_pretty(session).map_err(|source| Error::Encode {
+        path: path.clone(),
+        source,
+    })?;
     fs::write(&temp, json).map_err(write_error(&temp))?;
     fs::rename(&temp, &path).map_err(write_error(&path))?;
     Ok(path)
@@ -118,7 +127,7 @@ pub fn prune(folder: &Path, keep: usize) -> Result<(), Error> {
 mod tests {
     use super::*;
     use crate::fixtures;
-    use crate::model::{AppState, Focus, Pane, Resume, SavedWindow, WindowState};
+    use crate::model::{AppState, ExePath, Focus, Pane, Resume, SavedWindow, WindowState};
 
     fn sessions_saved_at(folder: &Path, saved_at: &[u64]) -> Result<(), Error> {
         for &saved_at in saved_at {
@@ -168,7 +177,7 @@ mod tests {
     fn a_written_session_reads_back() -> Result<(), Box<dyn std::error::Error>> {
         let folder = tempfile::tempdir()?;
         let pane = Pane {
-            program: Some(r"C:\tools\shell.exe".to_string()),
+            program: Some(ExePath::new(r"C:\tools\shell.exe".to_string())),
             command_line: None,
             cwd: Some(PathBuf::from(r"C:\work\project")),
             resume: Some(Resume::ClaudeCode {
@@ -203,6 +212,15 @@ mod tests {
         sessions_saved_at(folder.path(), &[3, 10, 2])?;
         let names = ["10.json", "3.json", "2.json"].map(|name| folder.path().join(name));
         assert_eq!(newest_first(folder.path())?, names);
+        Ok(())
+    }
+
+    #[test]
+    fn a_missing_folder_holds_no_session() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let folder = root.path().join("missing");
+        assert_eq!(newest_first(&folder)?, Vec::<PathBuf>::new());
+        assert!(matches!(latest(&folder), Err(Error::NoSession { .. })));
         Ok(())
     }
 

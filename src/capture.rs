@@ -1,8 +1,7 @@
 //! Reads the open windows into a session: GlazeWM for the windows, WMI for their processes, and each app module for
 //! what reopening its windows needs.
 
-use std::path::{Path, PathBuf};
-
+use crate::account;
 use crate::apps::{self, Kind, wezterm, windows_terminal};
 use crate::cwd;
 use crate::error::Error;
@@ -21,7 +20,6 @@ pub struct LiveWindow {
 pub struct Sources {
     glazewm: Client,
     processes: Processes,
-    profiles: PathBuf,
 }
 
 impl Sources {
@@ -29,7 +27,6 @@ impl Sources {
         Ok(Sources {
             glazewm: Client::connect()?,
             processes: Processes::connect()?,
-            profiles: profiles_folder()?,
         })
     }
 
@@ -50,7 +47,7 @@ impl Sources {
                 let process = self.processes.of_window(window.handle)?;
                 let app = match apps::kind_of(&window.process_name) {
                     Kind::Wezterm => AppState::Terminal {
-                        panes: wezterm::saved_panes(&self.profiles.join(&process.owner), &process)?,
+                        panes: wezterm::saved_panes(&account::home_of(&process.owner)?, &process)?,
                     },
                     Kind::WindowsTerminal => AppState::Terminal {
                         panes: windows_terminal::saved_tabs(
@@ -115,17 +112,6 @@ fn saved_window(workspace: &str, window: Window, process: Process, app: AppState
         state: window.state.into(),
         app,
     }
-}
-
-/// The folder holding every account's profile, so an owner's home is found without naming a user folder.
-fn profiles_folder() -> Result<PathBuf, Error> {
-    let profile = std::env::var_os("USERPROFILE").ok_or(Error::Env {
-        name: "USERPROFILE",
-    })?;
-    let profile = PathBuf::from(profile);
-    profile.parent().map(Path::to_path_buf).ok_or(Error::Env {
-        name: "USERPROFILE",
-    })
 }
 
 #[cfg(test)]

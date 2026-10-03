@@ -11,7 +11,7 @@ use windows::core::BOOL;
 use crate::apps::{self, Kind, quoted};
 use crate::cwd;
 use crate::error::Error;
-use crate::model::Pane;
+use crate::model::{ExePath, Pane};
 use crate::process::Processes;
 
 pub const PROCESS_NAME: &str = "WindowsTerminal";
@@ -39,13 +39,12 @@ pub fn saved_tabs(
         .started(&pids)?
         .into_iter()
         .map(|process| {
-            let is_shell_tab = process
-                .executable_path
-                .as_deref()
-                .is_some_and(|path| apps::kind_of(&apps::program_name(path)) == Kind::Shell);
+            let is_shell_tab = process.executable_path.as_ref().is_some_and(|path| {
+                apps::kind_of(&apps::program_name(path.as_str())) == Kind::Shell
+            });
             Ok(Pane {
                 cwd: match is_shell_tab {
-                    true => cwd::of_process(process.process_id)?,
+                    true => cwd::of_process(process.pid)?,
                     false => None,
                 },
                 program: process.executable_path,
@@ -62,7 +61,7 @@ pub fn launch_arguments(tabs: &[Pane]) -> String {
     let opened: Vec<String> = tabs
         .iter()
         .filter_map(|tab| {
-            let path = tab.program.as_deref();
+            let path = tab.program.as_ref().map(ExePath::as_str);
             let command = match (path, tab.command_line.as_deref()) {
                 (Some(path), _) if apps::kind_of(&apps::program_name(path)) == Kind::Shell => {
                     format!("\"{path}\"")
@@ -89,14 +88,22 @@ pub fn launch_arguments(tabs: &[Pane]) -> String {
 /// Every pseudo console window owned by another window, so the consoles of other hosts are left out.
 pub fn tab_shells() -> Result<Vec<Tab>, Error> {
     let mut tabs: Vec<Tab> = Vec::new();
-    unsafe { EnumWindows(Some(collect_tab), LPARAM(&raw mut tabs as isize)) }
-        .map_err(Error::Tabs)?;
+    // SAFETY: `collect_tab` reads lparam as the `tabs` it points to, which outlives the call.
+    unsafe { EnumWindows(Some(collect_tab), LPARAM(&raw mut tabs as isize)) }.map_err(
+        |source| Error::Os {
+            call: "EnumWindows",
+            context: "finding the Windows Terminal tabs".to_string(),
+            source,
+        },
+    )?;
     Ok(tabs)
 }
 
 unsafe extern "system" fn collect_tab(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    // SAFETY: `tab_shells` passes a live `Vec<Tab>` as lparam, and EnumWindows calls back on its thread.
     let tabs = unsafe { &mut *(lparam.0 as *mut Vec<Tab>) };
     let mut class = [0u16; 64];
+    // SAFETY: the buffer is a live local array, and its length bounds the write.
     let length = unsafe { GetClassNameW(hwnd, &mut class) };
     let is_pseudo_console = class
         .get(..usize::try_from(length).unwrap_or_default())
@@ -104,10 +111,12 @@ unsafe extern "system" fn collect_tab(hwnd: HWND, lparam: LPARAM) -> BOOL {
     if !is_pseudo_console {
         return BOOL(1);
     }
+    // SAFETY: takes the handle EnumWindows passed, by value.
     let Ok(owner) = (unsafe { GetWindow(hwnd, GW_OWNER) }) else {
         return BOOL(1);
     };
     let mut pid = 0;
+    // SAFETY: `pid` is a live local the call writes once.
     unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
     if pid != 0 {
         tabs.push(Tab {

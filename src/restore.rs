@@ -2,16 +2,18 @@
 //! workspace.
 
 use std::fmt;
+use std::rc::Rc;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::account;
 use crate::capture::{LiveWindow, Sources};
 use crate::error::Error;
 use crate::glazewm::{Client, Event};
 use crate::launch::{keep_output_from_launches, spawn};
 use crate::model::{Focus, SavedWindow, Session};
-use crate::plan::{assign, launch_key, launches};
+use crate::plan::{SkipReason, assign, launch_key, launches};
 use crate::uncloak;
 
 /// How long launched windows get to appear. A window started through `runas` takes a few seconds.
@@ -22,14 +24,24 @@ const QUIET: Duration = Duration::from_secs(5);
 /// Restoring starts after this long even if windows keep appearing.
 const SETTLE_LIMIT: Duration = Duration::from_secs(60);
 
-#[derive(PartialEq, Debug)]
+#[derive(Debug)]
 pub enum Outcome {
     AlreadyOpen,
     Launched,
-    Skipped(&'static str),
-    LaunchFailed(String),
+    Skipped(SkipReason),
+    /// Shared, since one launch can bring back several windows.
+    LaunchFailed(Rc<Error>),
+    /// Open, but moving it to its saved workspace or state failed.
+    PlaceFailed(Error),
     /// Launched, but no matching window appeared within [`WAIT`].
     NotSeen,
+}
+
+pub struct Restored {
+    /// One per saved window, in the session's order.
+    pub outcomes: Vec<Outcome>,
+    /// Showing the saved workspaces again, which runs after every window is placed.
+    pub refocus: Result<(), Error>,
 }
 
 impl Outcome {
@@ -45,6 +57,7 @@ impl fmt::Display for Outcome {
             Outcome::Launched => write!(f, "launched"),
             Outcome::Skipped(reason) => write!(f, "skipped, {reason}"),
             Outcome::LaunchFailed(error) => write!(f, "launch failed, {error}"),
+            Outcome::PlaceFailed(error) => write!(f, "open, but placing it failed, {error}"),
             Outcome::NotSeen => write!(
                 f,
                 "launched, but no window appeared in {} s",
@@ -54,9 +67,10 @@ impl fmt::Display for Outcome {
     }
 }
 
-/// Restores `session` and returns one outcome per saved window, in the session's order. `user` is the account
-/// rallypoint runs as: windows of any other owner are launched through `runas /savecred`.
-pub fn restore(session: &Session, user: &str) -> Result<Vec<Outcome>, Error> {
+/// Restores `session`. Windows of an owner other than the account rallypoint runs as are launched through
+/// `runas /savecred`. A window that fails to launch or move gets that error as its outcome, and the rest go on.
+pub fn restore(session: &Session) -> Result<Restored, Error> {
+    let user = account::current_user()?;
     keep_output_from_launches()?;
     settle()?;
     let saved = &session.windows;
@@ -65,40 +79,66 @@ pub fn restore(session: &Session, user: &str) -> Result<Vec<Outcome>, Error> {
         settle()?;
     }
     let open = assign(saved, &sources.live_windows()?);
-    let mut failures: Vec<(usize, String)> = Vec::new();
+    let mut launch_failures: Vec<(usize, Rc<Error>)> = Vec::new();
     let mut expected: Vec<usize> = Vec::new();
     for (launch, windows) in launches(saved, &open) {
-        match spawn(&launch, user) {
+        match spawn(&launch, &user) {
             Ok(()) => expected.extend(windows),
             Err(error) => {
-                failures.extend(windows.into_iter().map(|index| (index, error.to_string())))
+                let error = Rc::new(error);
+                launch_failures.extend(windows.into_iter().map(|index| (index, Rc::clone(&error))));
             }
         }
     }
     let live = wait(&mut sources, saved, &expected)?;
     let found = assign(saved, &live);
-    for (window, index) in saved.iter().zip(&found) {
-        if let Some(target) = index.and_then(|index| live.get(index)) {
-            place(&mut sources, window, target)?;
-        }
-    }
-    refocus(&mut sources, &session.focus)?;
-    Ok(saved
+    let place_failures: Vec<Option<Error>> = saved
         .iter()
+        .zip(&found)
+        .map(|(window, index)| {
+            let target = index.and_then(|index| live.get(index))?;
+            place(&mut sources, window, target).err()
+        })
+        .collect();
+    Ok(Restored {
+        outcomes: outcomes(saved, &open, &found, &launch_failures, place_failures),
+        refocus: refocus(&mut sources, &session.focus),
+    })
+}
+
+/// What became of each saved window: `open` and `found` are the open windows assigned before and after the launches,
+/// `launch_failures` the windows whose launch failed, and `place_failures` one entry per saved window.
+fn outcomes(
+    saved: &[SavedWindow],
+    open: &[Option<usize>],
+    found: &[Option<usize>],
+    launch_failures: &[(usize, Rc<Error>)],
+    place_failures: Vec<Option<Error>>,
+) -> Vec<Outcome> {
+    saved
+        .iter()
+        .zip(place_failures)
         .enumerate()
-        .map(|(index, window)| {
+        .map(|(index, (window, place_failure))| {
             let was_open = open.get(index).is_some_and(Option::is_some);
             let is_open = found.get(index).is_some_and(Option::is_some);
-            let failure = failures.iter().find(|(failed, _)| *failed == index);
-            match (was_open, is_open, launch_key(window), failure) {
-                (true, _, _, _) => Outcome::AlreadyOpen,
-                (_, true, _, _) => Outcome::Launched,
-                (_, _, Err(reason), _) => Outcome::Skipped(reason),
-                (_, _, _, Some((_, error))) => Outcome::LaunchFailed(error.clone()),
-                _ => Outcome::NotSeen,
+            let launch_failure = launch_failures.iter().find(|(failed, _)| *failed == index);
+            match (
+                place_failure,
+                was_open,
+                is_open,
+                launch_key(window),
+                launch_failure,
+            ) {
+                (Some(error), ..) => Outcome::PlaceFailed(error),
+                (None, true, ..) => Outcome::AlreadyOpen,
+                (None, _, true, ..) => Outcome::Launched,
+                (None, _, _, Err(reason), _) => Outcome::Skipped(reason),
+                (None, _, _, _, Some((_, error))) => Outcome::LaunchFailed(Rc::clone(error)),
+                (None, ..) => Outcome::NotSeen,
             }
         })
-        .collect())
+        .collect()
 }
 
 /// Blocks until GlazeWM has managed no new window for [`QUIET`], so the apps still starting at login are matched as
@@ -201,6 +241,43 @@ fn wait(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixtures;
+
+    #[test]
+    fn outcomes_report_each_window_by_what_happened_to_it() {
+        let app = |name: &str| fixtures::window(name, Some(r"C:\tools\app.exe"));
+        let saved = vec![
+            app("open"),
+            app("launched"),
+            fixtures::window("protected", None),
+            app("failed"),
+            app("unseen"),
+            app("misplaced"),
+        ];
+        let open = [Some(0), None, None, None, None, Some(1)];
+        let found = [Some(0), Some(2), None, None, None, Some(1)];
+        let launch_error = Rc::new(Error::ThreadGone { thread: "launch" });
+        let place_failures = vec![
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(Error::ThreadGone { thread: "place" }),
+        ];
+        let outcomes = outcomes(&saved, &open, &found, &[(3, launch_error)], place_failures);
+        assert!(matches!(
+            outcomes.as_slice(),
+            [
+                Outcome::AlreadyOpen,
+                Outcome::Launched,
+                Outcome::Skipped(SkipReason::Protected),
+                Outcome::LaunchFailed(_),
+                Outcome::NotSeen,
+                Outcome::PlaceFailed(Error::ThreadGone { thread: "place" }),
+            ]
+        ));
+    }
 
     #[test]
     fn focus_order_ends_on_the_focused_workspace() {

@@ -2,7 +2,8 @@
 //! prints the path. `rallypoint list` prints every saved session, newest first. `rallypoint restore` brings the newest
 //! session back, or `rallypoint restore <path>` the one at that path, and prints one line per saved window.
 //! `rallypoint watch` saves after window events until GlazeWM exits, printing each path written. Exits 1 when a
-//! window was not restored, 2 on error.
+//! window was not restored, the saved workspaces could not be shown again, or `list` met a session it cannot read,
+//! and 2 on any other error or a usage error.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -10,6 +11,8 @@ use std::process::ExitCode;
 use rallypoint::error::Error;
 use rallypoint::model::{SavedWindow, Session};
 use rallypoint::{capture, restore, store, watch};
+
+const USAGE: &str = "usage: rallypoint save | rallypoint list | rallypoint restore [<session path>] | rallypoint watch";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -21,7 +24,10 @@ fn main() -> ExitCode {
             .and_then(restore),
         [command, path] if command == "restore" => store::read(Path::new(path)).and_then(restore),
         [command] if command == "watch" => watch(),
-        _ => Err(Error::Usage(args)),
+        _ => {
+            eprintln!("{USAGE}, got {args:?}");
+            return ExitCode::from(2);
+        }
     };
     match result {
         Ok(code) => code,
@@ -38,19 +44,29 @@ fn save() -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Prints every readable session, and an error line for each one it cannot read (another format version).
 fn list() -> Result<ExitCode, Error> {
     let now = store::now()?;
+    let mut unreadable: usize = 0;
     for path in store::newest_first(&store::sessions_folder()?)? {
-        let saved = store::read(&path)?;
-        println!(
-            "{}\t{}\t{} windows on {} workspaces",
-            path.display(),
-            age(saved.saved_at, now),
-            saved.windows.len(),
-            workspace_count(&saved.windows)
-        );
+        match store::read(&path) {
+            Ok(saved) => println!(
+                "{}\t{}\t{} windows on {} workspaces",
+                path.display(),
+                age(saved.saved_at, now),
+                saved.windows.len(),
+                workspace_count(&saved.windows)
+            ),
+            Err(error) => {
+                unreadable += 1;
+                eprintln!("rallypoint: {error}");
+            }
+        }
     }
-    Ok(ExitCode::SUCCESS)
+    match unreadable {
+        0 => Ok(ExitCode::SUCCESS),
+        _ => Ok(ExitCode::from(1)),
+    }
 }
 
 fn watch() -> Result<ExitCode, Error> {
@@ -59,15 +75,18 @@ fn watch() -> Result<ExitCode, Error> {
 }
 
 fn restore(saved: Session) -> Result<ExitCode, Error> {
-    let user = std::env::var("USERNAME").map_err(|_| Error::Env { name: "USERNAME" })?;
-    let outcomes = restore::restore(&saved, &user)?;
-    for (window, outcome) in saved.windows.iter().zip(&outcomes) {
+    let restored = restore::restore(&saved)?;
+    for (window, outcome) in saved.windows.iter().zip(&restored.outcomes) {
         println!(
             "{}\t{}\t{outcome}\t{}",
             window.workspace, window.process_name, window.title
         );
     }
-    match outcomes.iter().all(restore::Outcome::is_restored) {
+    if let Err(error) = &restored.refocus {
+        eprintln!("rallypoint: {error}");
+    }
+    let all_restored = restored.outcomes.iter().all(restore::Outcome::is_restored);
+    match all_restored && restored.refocus.is_ok() {
         true => Ok(ExitCode::SUCCESS),
         false => Ok(ExitCode::from(1)),
     }
@@ -98,7 +117,7 @@ fn workspace_count(windows: &[SavedWindow]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rallypoint::model::{AppState, WindowState};
+    use rallypoint::model::{AppState, Owner, WindowState};
 
     fn window(workspace: &str) -> SavedWindow {
         SavedWindow {
@@ -106,7 +125,7 @@ mod tests {
             process_name: "app".to_string(),
             executable_path: None,
             command_line: None,
-            owner: "owner".to_string(),
+            owner: Owner::new("owner".to_string()),
             title: String::new(),
             class_name: String::new(),
             state: WindowState::Tiling,
