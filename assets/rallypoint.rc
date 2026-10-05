@@ -1,0 +1,2 @@
+// The id is tray::ICON. The lowest icon id is the one Explorer shows for the executable.
+1 ICON "rallypoint.ico"

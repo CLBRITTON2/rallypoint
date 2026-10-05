@@ -10,6 +10,9 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::HiDpi::{
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, MSG, PostQuitMessage,
     RegisterClassW, RegisterWindowMessageW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CONTEXTMENU,
@@ -186,6 +189,16 @@ fn window_error(call: &'static str) -> impl Fn(windows::core::Error) -> Error {
 }
 
 fn open_window() -> Result<HWND, Error> {
+    // So the tray icon is loaded at the taskbar's size, not scaled up from 96 dpi. Only this thread changes.
+    // SAFETY: takes a predefined context.
+    if unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }
+        .0
+        .is_null()
+    {
+        return Err(window_error("SetThreadDpiAwarenessContext")(
+            windows::core::Error::from_thread(),
+        ));
+    }
     // SAFETY: the name is a static string.
     let taskbar_created = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
     if taskbar_created == 0 {

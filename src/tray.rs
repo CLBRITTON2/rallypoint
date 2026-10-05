@@ -1,23 +1,27 @@
 //! The notification area icon `watch` shows while it runs, with a menu to save at once or stop watching.
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetSystemMetricsForDpi};
 use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_SETVERSION,
     NOTIFY_ICON_MESSAGE, NOTIFYICON_VERSION_4, NOTIFYICONDATAW, NOTIFYICONDATAW_0,
     Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, HMENU, IDI_APPLICATION, LoadIconW, MF_STRING,
-    PostMessageW, SetForegroundWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    TrackPopupMenu, WM_APP, WM_NULL,
+    AppendMenuW, CreatePopupMenu, DestroyIcon, DestroyMenu, HICON, HMENU, IMAGE_ICON,
+    LR_DEFAULTCOLOR, LoadImageW, MF_STRING, PostMessageW, SM_CXSMICON, SetForegroundWindow,
+    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WM_APP, WM_NULL,
 };
-use windows::core::w;
+use windows::core::{PCWSTR, w};
 
 use crate::error::Error;
 
 /// The message the icon sends its window on input, the event in the low word of its `lparam`.
 pub const CALLBACK: u32 = WM_APP + 1;
 const ID: u32 = 1;
+/// The icon's id in `assets/rallypoint.rc`.
+const ICON: u16 = 1;
 const TIP: &str = "rallypoint watch";
 const SAVE_NOW: usize = 1;
 const QUIT: usize = 2;
@@ -29,12 +33,7 @@ pub enum Choice {
 
 /// Shows the icon on `window`. A restarted Explorer forgets every icon, so this runs again on `TaskbarCreated`.
 pub fn add(window: HWND) -> Result<(), Error> {
-    // SAFETY: a stock icon id with no instance loads a shared icon, which is never freed.
-    let icon = unsafe { LoadIconW(None, IDI_APPLICATION) }.map_err(|source| Error::Os {
-        call: "LoadIconW",
-        context: "loading the tray icon".to_string(),
-        source,
-    })?;
+    let icon = load_icon()?;
     let data = NOTIFYICONDATAW {
         uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP,
         uCallbackMessage: CALLBACK,
@@ -46,8 +45,41 @@ pub fn add(window: HWND) -> Result<(), Error> {
         },
         ..identity(window)
     };
-    notify(NIM_ADD, "NIM_ADD", &data)?;
-    notify(NIM_SETVERSION, "NIM_SETVERSION", &data)
+    let added = notify(NIM_ADD, "NIM_ADD", &data)
+        .and_then(|()| notify(NIM_SETVERSION, "NIM_SETVERSION", &data));
+    // SAFETY: `icon` was loaded above and nothing else holds it, since the shell keeps its own copy.
+    unsafe { DestroyIcon(icon) }.map_err(icon_error("DestroyIcon"))?;
+    added
+}
+
+/// The executable's icon at the small icon size for the system DPI, which is the real one only on a DPI aware thread.
+fn load_icon() -> Result<HICON, Error> {
+    // SAFETY: a null name asks for this executable's module, which is never freed.
+    let instance =
+        unsafe { GetModuleHandleW(PCWSTR::null()) }.map_err(icon_error("GetModuleHandleW"))?;
+    // SAFETY: both take plain values.
+    let side = unsafe { GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForSystem()) };
+    // SAFETY: an integer id in place of a name, as MAKEINTRESOURCEW makes, names a resource of this module.
+    let image = unsafe {
+        LoadImageW(
+            Some(instance.into()),
+            PCWSTR(usize::from(ICON) as *const u16),
+            IMAGE_ICON,
+            side,
+            side,
+            LR_DEFAULTCOLOR,
+        )
+    }
+    .map_err(icon_error("LoadImageW"))?;
+    Ok(HICON(image.0))
+}
+
+fn icon_error(call: &'static str) -> impl Fn(windows::core::Error) -> Error {
+    move |source| Error::Os {
+        call,
+        context: "loading the tray icon".to_string(),
+        source,
+    }
 }
 
 pub fn remove(window: HWND) -> Result<(), Error> {
