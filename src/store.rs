@@ -129,7 +129,7 @@ mod tests {
     use super::*;
     use crate::fixtures;
     use crate::model::{
-        AppState, ExePath, Focus, Resume, SavedWindow, Tab, WeztermPane, WindowState,
+        AppState, ExePath, Focus, Resume, SavedWindow, Tab, WeztermPane, WeztermTab, WindowState,
     };
 
     fn sessions_saved_at(folder: &Path, saved_at: &[u64]) -> Result<(), Error> {
@@ -180,10 +180,11 @@ mod tests {
     fn a_written_session_reads_back() -> Result<(), Box<dyn std::error::Error>> {
         let folder = tempfile::tempdir()?;
         let pane = WeztermPane {
-            cwd: PathBuf::from(r"C:\work\project"),
             resume: Some(Resume::ClaudeCode {
                 session_id: "id".to_string(),
             }),
+            active: true,
+            ..fixtures::pane(r"C:\work\project", 0, 0, 80, 24)
         };
         let tab = Tab {
             program: Some(ExePath::new(r"C:\tools\shell.exe".to_string())),
@@ -198,7 +199,9 @@ mod tests {
                 ..fixtures::window("shell", None)
             },
             SavedWindow {
-                app: AppState::Wezterm { panes: vec![pane] },
+                app: AppState::Wezterm {
+                    tabs: vec![WeztermTab { panes: vec![pane] }],
+                },
                 ..fixtures::window("wezterm", None)
             },
             SavedWindow {

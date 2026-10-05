@@ -3,7 +3,9 @@
 
 use std::path::Path;
 
-use crate::model::{AppState, ExePath, SavedWindow, Tab, WeztermPane};
+use crate::account;
+use crate::error::Error;
+use crate::model::{AppState, ExePath, SavedWindow, Tab, WeztermTab};
 use crate::plan::{Key, Launch, SkipReason, Start};
 
 pub mod claude_code;
@@ -63,8 +65,8 @@ pub fn key(window: &SavedWindow) -> Result<Key, SkipReason> {
         (Kind::WindowsTerminal, AppState::WindowsTerminal { tabs }) => {
             Ok(windows_terminal::key(&window.owner, tabs))
         }
-        (Kind::Wezterm, AppState::Wezterm { panes }) => {
-            wezterm::key(executable_path, &window.owner, panes)
+        (Kind::Wezterm, AppState::Wezterm { tabs }) => {
+            wezterm::key(executable_path, &window.owner, tabs)
         }
         (Kind::Shell, AppState::Shell { cwd }) => Ok(Key::Shell {
             executable_path: executable_path.clone(),
@@ -93,7 +95,7 @@ pub fn launch(window: &SavedWindow, key: &Key) -> Launch {
             executable_path,
             owner,
             cwd,
-        } => wezterm::launch(executable_path, owner, cwd, wezterm_panes(&window.app)),
+        } => wezterm::launch(executable_path, owner, cwd, wezterm_tabs(&window.app)),
         Key::WindowsTerminal { owner, .. } => windows_terminal::launch(owner, tabs(&window.app)),
         // Without the saved arguments, so a window opened to run one command (a -Command) does not run it again.
         Key::Shell {
@@ -123,9 +125,20 @@ pub fn launch(window: &SavedWindow, key: &Key) -> Launch {
     }
 }
 
-fn wezterm_panes(app: &AppState) -> &[WeztermPane] {
+/// Opens what the launch of `window` left out in the window process `pid` draws: a wezterm window's other tabs and
+/// panes.
+pub fn rebuild(window: &SavedWindow, pid: u32) -> Result<(), Error> {
+    match &window.app {
+        AppState::Wezterm { tabs } => {
+            wezterm::rebuild(&account::home_of(&window.owner)?, pid, tabs)
+        }
+        AppState::WindowsTerminal { .. } | AppState::Shell { .. } | AppState::Program => Ok(()),
+    }
+}
+
+fn wezterm_tabs(app: &AppState) -> &[WeztermTab] {
     match app {
-        AppState::Wezterm { panes } => panes,
+        AppState::Wezterm { tabs } => tabs,
         AppState::WindowsTerminal { .. } | AppState::Shell { .. } | AppState::Program => &[],
     }
 }

@@ -8,6 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::account;
+use crate::apps;
 use crate::capture::{LiveWindow, Sources};
 use crate::error::Error;
 use crate::glazewm::{Client, Event};
@@ -36,6 +37,8 @@ pub enum Outcome {
     LaunchFailed(Rc<Error>),
     /// Open, but moving it to its saved workspace or state failed.
     PlaceFailed(Error),
+    /// Launched and placed, but opening its other tabs and panes failed.
+    LayoutFailed(Error),
     /// Launched, but no matching window appeared within [`WAIT`].
     NotSeen,
 }
@@ -65,6 +68,9 @@ impl fmt::Display for Outcome {
             Outcome::Skipped(reason) => write!(f, "skipped, {reason}"),
             Outcome::LaunchFailed(error) => write!(f, "launch failed, {error}"),
             Outcome::PlaceFailed(error) => write!(f, "open, but placing it failed, {error}"),
+            Outcome::LayoutFailed(error) => {
+                write!(f, "launched, but rebuilding its panes failed, {error}")
+            }
             Outcome::NotSeen => write!(
                 f,
                 "launched, but no window appeared in {} s",
@@ -105,14 +111,18 @@ pub fn restore(session: &Session) -> Result<Restored, Error> {
         .zip(&found)
         .map(|((index, window), found)| {
             let target = found.and_then(|found| live.get(found));
+            let launched = expected.contains(&index);
             let steps = Steps {
                 was_open: open.get(index).is_some_and(Option::is_some),
-                launched: expected.contains(&index),
+                launched,
                 launch_failure: launch_failures
                     .iter()
                     .find(|(failed, _)| *failed == index)
                     .map(|(_, error)| Rc::clone(error)),
                 is_open: target.is_some(),
+                layout_failure: target
+                    .filter(|_| launched)
+                    .and_then(|target| apps::rebuild(window, target.pid).err()),
                 place_failure: target.and_then(|target| place(&mut sources, window, target).err()),
             };
             outcome(window, steps)
@@ -134,6 +144,8 @@ struct Steps {
     launch_failure: Option<Rc<Error>>,
     /// Open after the launches.
     is_open: bool,
+    /// Rebuilding the tabs and panes of a launched window.
+    layout_failure: Option<Error>,
     place_failure: Option<Error>,
 }
 
@@ -144,6 +156,10 @@ fn outcome(window: &SavedWindow, steps: Steps) -> Outcome {
             place_failure: Some(error),
             ..
         } => Outcome::PlaceFailed(error),
+        Steps {
+            layout_failure: Some(error),
+            ..
+        } => Outcome::LayoutFailed(error),
         Steps { was_open: true, .. } => Outcome::AlreadyOpen,
         Steps {
             is_open: true,
@@ -325,6 +341,17 @@ mod tests {
                 }
             ),
             Outcome::Launched
+        ));
+        assert!(matches!(
+            outcome(
+                &app,
+                Steps {
+                    is_open: true,
+                    layout_failure: Some(Error::WeztermEmpty { pid: 1 }),
+                    ..launched()
+                }
+            ),
+            Outcome::LayoutFailed(Error::WeztermEmpty { pid: 1 })
         ));
         assert!(matches!(outcome(&app, launched()), Outcome::NotSeen));
         assert!(matches!(

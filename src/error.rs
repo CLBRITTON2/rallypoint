@@ -85,8 +85,9 @@ pub enum Error {
         code: Option<i32>,
         output: String,
     },
-    #[error("wezterm cli list against {socket:?} exited {code:?}: {stderr}")]
+    #[error("wezterm cli {arguments} against {socket:?} exited {code:?}: {stderr}")]
     Wezterm {
+        arguments: String,
         socket: PathBuf,
         code: Option<i32>,
         stderr: String,
@@ -97,8 +98,23 @@ pub enum Error {
         #[source]
         source: serde_json::Error,
     },
+    #[error(
+        "wezterm cli against {socket:?} printed {printed:?} where a new pane id belongs: {source}"
+    )]
+    WeztermPaneId {
+        socket: PathBuf,
+        printed: String,
+        #[source]
+        source: std::num::ParseIntError,
+    },
     #[error("wezterm process {pid} holds {windows} windows, so its panes cannot be told apart")]
     WeztermWindows { pid: u32, windows: usize },
+    #[error("wezterm process {pid} lists no pane to rebuild the saved tabs from")]
+    WeztermEmpty { pid: u32 },
+    #[error(
+        "no split line divides the saved panes at {areas:?}, so their layout cannot be rebuilt"
+    )]
+    PaneLayout { areas: Vec<crate::model::PaneArea> },
     #[error("the pane cwd {cwd:?} is not a local file URI")]
     PaneCwd { cwd: String },
     #[error("the pane cwd {cwd:?} is not UTF-8 once decoded: {source}")]

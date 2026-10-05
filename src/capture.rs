@@ -10,9 +10,10 @@ use crate::model::{AppState, Focus, SavedWindow, Session, VERSION};
 use crate::process::{Process, Processes};
 use crate::store;
 
-/// An open window: what a save records of it, and the GlazeWM container ID that commands it.
+/// An open window: what a save records of it, the GlazeWM container ID that commands it, and its process.
 pub struct LiveWindow {
     pub id: String,
+    pub pid: u32,
     pub window: SavedWindow,
 }
 
@@ -49,7 +50,7 @@ impl Sources {
                     Kind::Wezterm => {
                         let owner_home = account::home_of(&process.owner)?;
                         AppState::Wezterm {
-                            panes: wezterm::saved_panes(&owner_home, &process)?,
+                            tabs: wezterm::saved_tabs(&owner_home, &process)?,
                         }
                     }
                     Kind::WindowsTerminal => AppState::WindowsTerminal {
@@ -66,6 +67,7 @@ impl Sources {
                 };
                 windows.push(LiveWindow {
                     id: window.id.clone(),
+                    pid: process.pid,
                     window: saved_window(&workspace.name, window, process, app),
                 });
             }

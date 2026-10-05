@@ -62,7 +62,8 @@ Exit codes: 0 done, 1 when `restore` could not bring back every window, 2 error.
 
 For each window GlazeWM manages: its workspace and state, and the program behind it (executable path, command line
 and owning account). Each session also records the workspace shown on each monitor and the one with focus. For a
-[wezterm](https://wezterm.org) window it also saves the working directory of each pane. For a console shell (pwsh,
+[wezterm](https://wezterm.org) window it also saves its tabs in order and, for each pane, its working directory, Claude
+Code session, place in its tab and whether its tab focuses it. For a console shell (pwsh,
 Windows PowerShell or cmd) it saves the shell's folder. For a Windows Terminal window it saves each tab's program and, for a
 shell tab, its folder. PowerShell's `cd` changes only PowerShell's own location, not its process's folder, so a
 PowerShell console or tab reopens in the folder it started in. To have it reopen where you last `cd`'d, add this
@@ -82,8 +83,9 @@ stops saving while Windows shuts down, so the apps closing one by one never over
 1. It waits until no new window has appeared for 5 s, so apps still starting at login count as open.
 2. Windows of saved programs that a GlazeWM `wm-exit` left hidden and unmanaged are shown again and handed back to
    GlazeWM, instead of being started a second time.
-3. Open windows are matched to saved ones, and the rest are launched. A wezterm window is matched by its first pane's
-   folder and reopened there. Any other program is matched by its executable and launched once with its saved command
+3. Open windows are matched to saved ones, and the rest are launched. A wezterm window is matched by the folder of the top
+   left pane of its first tab and reopened there, then its other tabs and its splits are rebuilt with `wezterm cli`,
+   each pane in its folder and Claude Code session, and each tab's focused pane is focused again. Any other program is matched by its executable and launched once with its saved command
    line, since a second launch of most apps opens a stray window instead of restoring the saved ones. A shell is
    matched by its folder and reopened there in a console of its own, one per window, without its saved arguments, so
    a window opened to run one command does not run it again. A Windows Terminal window is matched by its tabs and
@@ -108,7 +110,10 @@ as that account.
   order, and the first tab is the active one.
 - Elevated windows relaunch unelevated. The folder of an elevated shell, or of another account's, cannot be read, so
   it reopens in the default folder.
-- A multi-pane wezterm window comes back with its first pane only.
+- A wezterm window comes back with its first tab shown, since wezterm does not report which tab was. Split sizes come
+  back to within a cell.
+- A wezterm pane running WSL reopens in its default folder, since wezterm sees only the Windows folder of `wsl.exe`,
+  not a `cd` inside Linux.
 - What happens inside a window is up to the app: a browser restores its own tabs.
 - A `watch` that is killed (`Stop-Process`) leaves its tray icon until the pointer passes over it.
 

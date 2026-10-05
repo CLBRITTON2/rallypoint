@@ -67,9 +67,13 @@ pub fn session_id(
     Ok(None)
 }
 
-/// The command a terminal runs to reopen session `session_id`.
-pub fn resume_command(session_id: &str) -> String {
-    format!("pwsh -NoLogo -Command claude --resume {session_id}")
+/// The program and arguments a terminal runs to reopen session `session_id`.
+pub fn resume_command(session_id: &str) -> Vec<String> {
+    [
+        "pwsh", "-NoLogo", "-Command", "claude", "--resume", session_id,
+    ]
+    .map(str::to_string)
+    .to_vec()
 }
 
 /// The title without the status glyph Claude Code puts in front of it (an idle star or a busy spinner).

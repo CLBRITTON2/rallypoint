@@ -4,6 +4,12 @@ Each release has a `## [<version>] - <date>` section, newest first. `scripts/rel
 the tagged version as its GitHub release notes, and refuses to release a version without one. Changes since the last
 release go under `## [Unreleased]`, renamed to the version when it is tagged.
 
+## [Unreleased]
+
+- wezterm windows come back with every tab and split, each pane in its folder and Claude Code session, and each
+  tab's focused pane focused. Sessions move to format version 3, so the first `save` after upgrading is the oldest
+  one that restores.
+
 ## [0.2.0] - 2026-10-05
 
 - `rallypoint list` prints every saved session, newest first, with its age, window count and workspace count.

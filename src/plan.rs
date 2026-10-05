@@ -209,7 +209,7 @@ mod tests {
     use super::*;
     use crate::apps::{wezterm, windows_terminal};
     use crate::fixtures;
-    use crate::model::{AppState, Resume, Tab, WeztermPane};
+    use crate::model::{AppState, Resume, Tab, WeztermPane, WeztermTab};
 
     fn program(path: &str, command_line: &str) -> SavedWindow {
         SavedWindow {
@@ -220,13 +220,15 @@ mod tests {
 
     fn terminal(cwd: &str, claude_session_id: Option<&str>) -> SavedWindow {
         let pane = WeztermPane {
-            cwd: PathBuf::from(cwd),
             resume: claude_session_id.map(|session_id| Resume::ClaudeCode {
                 session_id: session_id.to_string(),
             }),
+            ..fixtures::pane(cwd, 0, 0, 80, 24)
         };
         SavedWindow {
-            app: AppState::Wezterm { panes: vec![pane] },
+            app: AppState::Wezterm {
+                tabs: vec![WeztermTab { panes: vec![pane] }],
+            },
             ..fixtures::window(
                 wezterm::PROCESS_NAME,
                 Some(r"C:\Program Files\WezTerm\wezterm-gui.exe"),
@@ -267,6 +269,7 @@ mod tests {
     fn live(window: SavedWindow) -> LiveWindow {
         LiveWindow {
             id: String::new(),
+            pid: 0,
             window,
         }
     }
@@ -431,7 +434,7 @@ mod tests {
         let packaged = program(PACKAGED, "");
         assert!(matches!(launch_key(&packaged), Err(SkipReason::Packaged)));
         let paneless = SavedWindow {
-            app: AppState::Wezterm { panes: Vec::new() },
+            app: AppState::Wezterm { tabs: Vec::new() },
             ..terminal(r"C:\a", None)
         };
         assert!(matches!(launch_key(&paneless), Err(SkipReason::NoPanes)));
