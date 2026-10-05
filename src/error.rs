@@ -57,6 +57,8 @@ pub enum Error {
         "WMI withholds the executable path or command line of rallypoint process {pid}, so its command is unknown"
     )]
     CommandLineHidden { pid: u32 },
+    #[error("Shell_NotifyIconW {message} for the tray icon failed")]
+    Tray { message: &'static str },
     #[error("the environment variable {name} is not set")]
     Env { name: &'static str },
     #[error("running {program} failed: {source}")]

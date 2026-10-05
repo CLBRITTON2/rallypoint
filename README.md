@@ -52,6 +52,9 @@ keybindings:
     bindings: ['lwin+alt+r']
 ```
 
+While `watch` runs it shows an icon in the notification area. Right-click it for Save now, which saves at once (say
+before a restart), or Quit, which stops `watch`.
+
 Exit codes: 0 done, 1 when `restore` could not bring back every window, 2 error. Errors go to stderr.
 
 ## What it saves
@@ -106,6 +109,7 @@ as that account.
   it reopens in the default folder.
 - A multi-pane wezterm window comes back with its first pane only.
 - What happens inside a window is up to the app: a browser restores its own tabs.
+- A `watch` that is killed (`Stop-Process`) leaves its tray icon until the pointer passes over it.
 
 ## Test
 

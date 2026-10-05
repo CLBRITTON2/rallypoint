@@ -1,9 +1,10 @@
 //! Keeps the newest session current: saves after GlazeWM window and workspace events and on a timer, and stops
-//! saving while Windows shuts down, so the windows closing one by one never overwrite the real session.
+//! saving while Windows shuts down, so the windows closing one by one never overwrite the real session. Shows a tray
+//! icon while it runs, whose menu saves at once or stops watching.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -11,7 +12,8 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, MSG, PostQuitMessage,
-    RegisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ENDSESSION, WM_QUERYENDSESSION, WNDCLASSW,
+    RegisterClassW, RegisterWindowMessageW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CONTEXTMENU,
+    WM_ENDSESSION, WM_QUERYENDSESSION, WNDCLASSW,
 };
 use windows::core::{PCWSTR, w};
 
@@ -20,6 +22,7 @@ use crate::error::Error;
 use crate::glazewm::{Client, Event};
 use crate::model::{SavedWindow, same_windows};
 use crate::store;
+use crate::tray::{self, Choice};
 
 /// A burst of events (a restore, a workspace switch) gives one save this long after its last event.
 const DEBOUNCE: Duration = Duration::from_secs(2);
@@ -44,17 +47,33 @@ enum Signal {
     /// The shutdown was cancelled.
     Thaw,
     Exiting,
+    /// The tray menu's Save now.
+    SaveNow,
+    /// The tray menu's Quit.
+    Quit,
     Failed(Error),
 }
 
-/// Saves into `folder` until GlazeWM exits. Returns the error that stopped it otherwise.
+/// Saves into `folder` until GlazeWM exits or the tray menu's Quit. Returns the error that stopped it otherwise.
 pub fn watch(folder: &Path) -> Result<(), Error> {
     let (sender, signals) = mpsc::channel::<Signal>();
     Client::connect()?
         .subscribe(&EVENTS)?
         .forward(sender.clone(), signal_of);
-    thread::spawn(move || listen_for_shutdown(sender));
+    let (opened, window) = mpsc::channel::<Result<isize, Error>>();
+    thread::spawn(move || listen(sender, opened));
+    let window = window
+        .recv()
+        .map_err(|_| Error::ThreadGone { thread: "window" })??;
+    let stopped = save_until_stopped(folder, &signals);
+    // Otherwise the icon stays in the notification area until the pointer passes over it.
+    if let Err(error) = tray::remove(HWND(window as _)) {
+        eprintln!("rallypoint: removing the tray icon failed: {error}");
+    }
+    stopped
+}
 
+fn save_until_stopped(folder: &Path, signals: &Receiver<Signal>) -> Result<(), Error> {
     let mut frozen = false;
     let mut last: Option<Vec<SavedWindow>> = None;
     let mut failures: u32 = 0;
@@ -69,11 +88,12 @@ pub fn watch(folder: &Path) -> Result<(), Error> {
                 frozen = false;
                 quiet = Some(Instant::now() + DEBOUNCE);
             }
-            Ok(Signal::Exiting) => return Ok(()),
+            Ok(Signal::SaveNow) => quiet = Some(Instant::now()),
+            Ok(Signal::Exiting | Signal::Quit) => return Ok(()),
             Ok(Signal::Failed(error)) => return Err(error),
             Err(RecvTimeoutError::Disconnected) => {
                 return Err(Error::ThreadGone {
-                    thread: "event and shutdown",
+                    thread: "event and window",
                 });
             }
             Err(RecvTimeoutError::Timeout) => {
@@ -130,28 +150,50 @@ fn signal_of(event: Result<Event, Error>) -> Signal {
 }
 
 thread_local! {
-    /// Where the window procedure sends shutdown signals. It runs on the thread that made the window.
-    static SHUTDOWN: RefCell<Option<Sender<Signal>>> = const { RefCell::new(None) };
+    /// Where the window procedure sends its signals. It runs on the thread that made the window.
+    static SIGNALS: RefCell<Option<Sender<Signal>>> = const { RefCell::new(None) };
+    /// The message id Explorer broadcasts when it starts a new taskbar.
+    static TASKBAR_CREATED: Cell<Option<u32>> = const { Cell::new(None) };
 }
 
-/// Runs a hidden top-level window for `WM_QUERYENDSESSION`, which a message-only window never receives.
-fn listen_for_shutdown(signals: Sender<Signal>) {
+/// Runs a hidden top-level window with the tray icon on it, since a message-only window never receives
+/// `WM_QUERYENDSESSION` or `TaskbarCreated`. Sends the window on `opened` once it is up, or why it is not.
+fn listen(signals: Sender<Signal>, opened: Sender<Result<isize, Error>>) {
     let failed = signals.clone();
-    SHUTDOWN.with_borrow_mut(|shutdown| *shutdown = Some(signals));
-    if let Err(error) = run_shutdown_window() {
+    SIGNALS.with_borrow_mut(|slot| *slot = Some(signals));
+    let window = match open_window() {
+        Ok(window) => window,
+        Err(error) => {
+            // `watch` waits on `opened` until this send, so it is there to receive it.
+            drop(opened.send(Err(error)));
+            return;
+        }
+    };
+    show_icon(window);
+    drop(opened.send(Ok(window.0 as isize)));
+    if let Err(error) = pump_messages() {
         // The main loop being gone means rallypoint is exiting, so there is nobody left to tell.
         drop(failed.send(Signal::Failed(error)));
     }
 }
 
-fn run_shutdown_window() -> Result<(), Error> {
-    let window_error = |call| {
-        move |source| Error::Os {
-            call,
-            context: "opening the shutdown window".to_string(),
-            source,
-        }
-    };
+fn window_error(call: &'static str) -> impl Fn(windows::core::Error) -> Error {
+    move |source| Error::Os {
+        call,
+        context: "opening the watch window".to_string(),
+        source,
+    }
+}
+
+fn open_window() -> Result<HWND, Error> {
+    // SAFETY: the name is a static string.
+    let taskbar_created = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
+    if taskbar_created == 0 {
+        return Err(window_error("RegisterWindowMessageW")(
+            windows::core::Error::from_thread(),
+        ));
+    }
+    TASKBAR_CREATED.set(Some(taskbar_created));
     // SAFETY: a null name asks for this executable's module, which is never freed.
     let instance =
         unsafe { GetModuleHandleW(PCWSTR::null()) }.map_err(window_error("GetModuleHandleW"))?;
@@ -185,7 +227,10 @@ fn run_shutdown_window() -> Result<(), Error> {
             None,
         )
     }
-    .map_err(window_error("CreateWindowExW"))?;
+    .map_err(window_error("CreateWindowExW"))
+}
+
+fn pump_messages() -> Result<(), Error> {
     let mut message = MSG::default();
     loop {
         // SAFETY: `message` is a live local the call writes.
@@ -204,6 +249,27 @@ fn run_shutdown_window() -> Result<(), Error> {
     }
 }
 
+/// Adds the tray icon, warning rather than stopping `watch`, which saves just as well without it.
+fn show_icon(window: HWND) {
+    if let Err(error) = tray::add(window) {
+        eprintln!("rallypoint: showing the tray icon failed: {error}");
+    }
+}
+
+/// What the tray menu's pick asks of the main loop, warning when the menu fails.
+fn picked(window: HWND, wparam: WPARAM) -> Option<Signal> {
+    match tray::choose(window, wparam) {
+        Ok(choice) => choice.map(|choice| match choice {
+            Choice::SaveNow => Signal::SaveNow,
+            Choice::Quit => Signal::Quit,
+        }),
+        Err(error) => {
+            eprintln!("rallypoint: the tray menu failed: {error}");
+            None
+        }
+    }
+}
+
 unsafe extern "system" fn on_message(
     window: HWND,
     message: u32,
@@ -213,13 +279,18 @@ unsafe extern "system" fn on_message(
     let signal = match message {
         WM_QUERYENDSESSION => Some(Signal::Freeze),
         WM_ENDSESSION if wparam.0 == 0 => Some(Signal::Thaw),
+        tray::CALLBACK if (lparam.0 & 0xFFFF) as u32 == WM_CONTEXTMENU => picked(window, wparam),
+        _ if TASKBAR_CREATED.get() == Some(message) => {
+            show_icon(window);
+            None
+        }
         _ => None,
     };
     if let Some(signal) = signal {
-        let sent = SHUTDOWN.with_borrow(|shutdown| {
-            shutdown
+        let sent = SIGNALS.with_borrow(|signals| {
+            signals
                 .as_ref()
-                .is_some_and(|shutdown| shutdown.send(signal).is_ok())
+                .is_some_and(|signals| signals.send(signal).is_ok())
         });
         if !sent {
             // SAFETY: called on the thread running the message loop.

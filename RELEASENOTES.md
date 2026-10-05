@@ -18,6 +18,7 @@ release go under `## [Unreleased]`, renamed to the version when it is tagged.
   that makes it the folder of the last `cd`.
 - Windows Terminal windows reopen through `wt.exe` with their saved tabs, each shell tab in its folder.
 - `rallypoint status` prints whether `rallypoint watch` is running and the newest session, and exits 1 when it is not.
+- `rallypoint watch` shows a notification area icon whose right-click menu saves at once or stops `watch`.
 
 ## [0.1.0] - 2026-10-02
 

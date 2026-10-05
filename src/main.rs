@@ -4,7 +4,8 @@
 //! `rallypoint watch` saves after window events until GlazeWM exits, printing each path written. `rallypoint status`
 //! prints whether a watch is running, under any account, and the newest session. Exits 1 when a window was not
 //! restored, the saved workspaces could not be shown again, `list` met a session it cannot read, or `status` found no
-//! watch running, and 2 on any other error or a usage error.
+//! watch running, and 2 on any other error or a usage error. `--help` prints the commands and `--version` the
+//! version, and no command prints the commands to stderr as a usage error.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -13,22 +14,57 @@ use rallypoint::error::Error;
 use rallypoint::model::Session;
 use rallypoint::{capture, list, restore, status, store, watch};
 
-const USAGE: &str = "usage: rallypoint save | rallypoint list | rallypoint restore [<session path>] | rallypoint watch \
-                     | rallypoint status";
+const HELP: &str = concat!(
+    "rallypoint ",
+    env!("CARGO_PKG_VERSION"),
+    "\n",
+    env!("CARGO_PKG_DESCRIPTION"),
+    "
+
+Usage: rallypoint <command>
+
+Commands:
+  save              Save the current session and print its path
+  list              List the saved sessions, newest first
+  restore [<path>]  Bring back the newest session, or the one at <path>
+  watch             Keep the saved session current until GlazeWM exits
+  status            Show whether watch is running and the newest session
+
+Options:
+  -h, --help        Print this help
+  -V, --version     Print the version
+"
+);
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let result = match args.as_slice() {
-        [command] if command == "save" => save(),
-        [command] if command == "list" => list(),
-        [command] if command == "restore" => store::sessions_folder()
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    let result = match words.as_slice() {
+        ["save"] => save(),
+        ["list"] => list(),
+        ["restore"] => store::sessions_folder()
             .and_then(|folder| store::latest(&folder))
             .and_then(restore),
-        [command, path] if command == "restore" => store::read(Path::new(path)).and_then(restore),
-        [command] if command == "watch" => watch(),
-        [command] if command == "status" => status(),
+        ["restore", path] => store::read(Path::new(path)).and_then(restore),
+        ["watch"] => watch(),
+        ["status"] => status(),
+        ["-h" | "--help" | "help"] => {
+            print!("{HELP}");
+            return ExitCode::SUCCESS;
+        }
+        ["-V" | "--version"] => {
+            println!("rallypoint {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        }
+        [] => {
+            eprint!("{HELP}");
+            return ExitCode::from(2);
+        }
         _ => {
-            eprintln!("{USAGE}, got {args:?}");
+            eprintln!(
+                "rallypoint: unknown command '{}'\nRun 'rallypoint --help' to see the commands.",
+                words.join(" ")
+            );
             return ExitCode::from(2);
         }
     };

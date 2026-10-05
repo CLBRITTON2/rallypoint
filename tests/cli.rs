@@ -26,7 +26,34 @@ fn an_unknown_command_is_a_usage_error() -> TestResult {
     let local_app_data = tempfile::tempdir()?;
     let output = run(local_app_data.path(), &["unknown"])?;
     assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8(output.stderr)?.starts_with("usage: rallypoint save"));
+    assert_eq!(
+        String::from_utf8(output.stderr)?,
+        "rallypoint: unknown command 'unknown'\nRun 'rallypoint --help' to see the commands.\n"
+    );
+    Ok(())
+}
+
+#[test]
+fn help_lists_every_command() -> TestResult {
+    let local_app_data = tempfile::tempdir()?;
+    let output = run(local_app_data.path(), &["--help"])?;
+    assert_eq!(output.status.code(), Some(0));
+    let help = String::from_utf8(output.stdout)?;
+    for command in ["save", "list", "restore [<path>]", "watch", "status"] {
+        assert!(
+            help.contains(&format!("\n  {command} ")),
+            "{command} missing from {help}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn no_command_prints_the_help_as_a_usage_error() -> TestResult {
+    let local_app_data = tempfile::tempdir()?;
+    let output = run(local_app_data.path(), &[])?;
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8(output.stderr)?.contains("Usage: rallypoint <command>"));
     Ok(())
 }
 

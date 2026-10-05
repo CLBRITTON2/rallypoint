@@ -16,5 +16,6 @@ mod process;
 pub mod restore;
 pub mod status;
 pub mod store;
+mod tray;
 mod uncloak;
 pub mod watch;
