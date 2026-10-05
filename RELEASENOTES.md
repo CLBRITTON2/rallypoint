@@ -19,6 +19,7 @@ release go under `## [Unreleased]`, renamed to the version when it is tagged.
 - Windows Terminal windows reopen through `wt.exe` with their saved tabs, each shell tab in its folder.
 - `rallypoint status` prints whether `rallypoint watch` is running and the newest session, and exits 1 when it is not.
 - `rallypoint watch` shows a notification area icon whose right-click menu saves at once or stops `watch`.
+- A second `rallypoint watch` exits with an error while one is running, under any account.
 - rallypoint has its own icon, in Explorer and in the notification area.
 - `rallypoint --help` lists the commands, and an unknown command says how to see them.
 

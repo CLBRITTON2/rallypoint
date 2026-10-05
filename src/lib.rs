@@ -10,6 +10,7 @@ mod fixtures;
 mod glazewm;
 mod launch;
 pub mod list;
+mod lock;
 pub mod model;
 mod plan;
 mod process;

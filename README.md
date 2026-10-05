@@ -53,7 +53,8 @@ keybindings:
 ```
 
 While `watch` runs it shows an icon in the notification area. Right-click it for Save now, which saves at once (say
-before a restart), or Quit, which stops `watch`.
+before a restart), or Quit, which stops `watch`. Only one `watch` runs at a time, under any account: a second one
+exits with an error.
 
 Exit codes: 0 done, 1 when `restore` could not bring back every window, 2 error. Errors go to stderr.
 

@@ -23,6 +23,7 @@ use windows::core::{PCWSTR, w};
 use crate::capture::capture;
 use crate::error::Error;
 use crate::glazewm::{Client, Event};
+use crate::lock;
 use crate::model::{SavedWindow, same_windows};
 use crate::store;
 use crate::tray::{self, Choice};
@@ -59,6 +60,7 @@ enum Signal {
 
 /// Saves into `folder` until GlazeWM exits or the tray menu's Quit. Returns the error that stopped it otherwise.
 pub fn watch(folder: &Path) -> Result<(), Error> {
+    let _lock = lock::take()?;
     let (sender, signals) = mpsc::channel::<Signal>();
     Client::connect()?
         .subscribe(&EVENTS)?

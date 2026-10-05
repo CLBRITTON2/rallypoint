@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use rallypoint::model::VERSION;
+use windows::Win32::System::Threading::CreateMutexW;
+use windows::core::w;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -54,6 +56,20 @@ fn no_command_prints_the_help_as_a_usage_error() -> TestResult {
     let output = run(local_app_data.path(), &[])?;
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8(output.stderr)?.contains("Usage: rallypoint <command>"));
+    Ok(())
+}
+
+#[test]
+fn watch_refuses_to_start_while_another_holds_the_lock() -> TestResult {
+    // SAFETY: no security attributes, and the name is a static string. The handle closes when the test exits.
+    unsafe { CreateMutexW(None, false, w!("Global\\rallypoint-watch")) }?;
+    let local_app_data = tempfile::tempdir()?;
+    let output = run(local_app_data.path(), &["watch"])?;
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8(output.stderr)?,
+        "rallypoint: another rallypoint watch is already running, rallypoint status shows its pid\n"
+    );
     Ok(())
 }
 
