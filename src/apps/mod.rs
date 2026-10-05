@@ -3,6 +3,9 @@
 
 use std::path::Path;
 
+use crate::model::{AppState, ExePath, SavedWindow, Tab, WeztermPane};
+use crate::plan::{Key, Launch, SkipReason, Start};
+
 pub mod claude_code;
 pub mod wezterm;
 pub mod windows_terminal;
@@ -44,6 +47,93 @@ pub fn kind_of(process_name: &str) -> Kind {
     }
 }
 
+/// The key of `window`, or why it has none.
+pub fn key(window: &SavedWindow) -> Result<Key, SkipReason> {
+    let executable_path = window
+        .executable_path
+        .as_ref()
+        .ok_or(SkipReason::Protected)?;
+    match (kind_of(&window.process_name), &window.app) {
+        (Kind::WindowsTerminal, AppState::WindowsTerminal { tabs }) => {
+            Ok(windows_terminal::key(&window.owner, tabs))
+        }
+        (Kind::Wezterm, AppState::Wezterm { panes }) => {
+            wezterm::key(executable_path, &window.owner, panes)
+        }
+        (Kind::Shell, AppState::Shell { cwd }) => Ok(Key::Shell {
+            executable_path: executable_path.clone(),
+            owner: window.owner.clone(),
+            cwd: cwd.clone(),
+        }),
+        (Kind::Program, AppState::Program) => Ok(Key::Program {
+            executable_path: executable_path.clone(),
+        }),
+        _ => Err(SkipReason::StateMismatch),
+    }
+}
+
+/// What to start to bring back `window`, whose key is `key`.
+pub fn launch(window: &SavedWindow, key: &Key) -> Launch {
+    match key {
+        Key::Wezterm {
+            executable_path,
+            owner,
+            cwd,
+        } => wezterm::launch(executable_path, owner, cwd, wezterm_panes(&window.app)),
+        Key::WindowsTerminal { owner, .. } => windows_terminal::launch(owner, tabs(&window.app)),
+        // Without the saved arguments, so a window opened to run one command (a -Command) does not run it again.
+        Key::Shell {
+            executable_path,
+            owner,
+            cwd,
+        } => Launch {
+            owner: owner.clone(),
+            program: executable_path.to_string(),
+            arguments: String::new(),
+            start: Start::Console { cwd: cwd.clone() },
+        },
+        Key::Program { executable_path } => Launch {
+            owner: window.owner.clone(),
+            program: executable_path.to_string(),
+            arguments: window
+                .command_line
+                .as_deref()
+                .map(|command_line| arguments_of(command_line, executable_path))
+                .unwrap_or_default()
+                .to_string(),
+            start: Start::Detached,
+        },
+    }
+}
+
+fn wezterm_panes(app: &AppState) -> &[WeztermPane] {
+    match app {
+        AppState::Wezterm { panes } => panes,
+        AppState::WindowsTerminal { .. } | AppState::Shell { .. } | AppState::Program => &[],
+    }
+}
+
+fn tabs(app: &AppState) -> &[Tab] {
+    match app {
+        AppState::WindowsTerminal { tabs } => tabs,
+        AppState::Wezterm { .. } | AppState::Shell { .. } | AppState::Program => &[],
+    }
+}
+
+/// A command line without its leading program, quoted or not. An unquoted program is `executable_path` when the
+/// command line starts with it, since that path can hold spaces, and otherwise ends at the first space.
+fn arguments_of<'a>(command_line: &'a str, executable_path: &ExePath) -> &'a str {
+    let command_line = command_line.trim_start();
+    let rest = match command_line.strip_prefix('"') {
+        Some(quoted) => quoted.split_once('"').map_or("", |(_, rest)| rest),
+        None => match executable_path.strip_from(command_line) {
+            Some(rest) if rest.is_empty() || rest.starts_with(' ') => rest,
+            _ => command_line.split_once(' ').map_or("", |(_, rest)| rest),
+        },
+    };
+    rest.trim()
+}
+
 /// The process name of an executable path, as GlazeWM names a window's process: `pwsh` for `C:\x\pwsh.exe`.
 pub fn program_name(executable_path: &str) -> String {
     Path::new(executable_path)
@@ -73,5 +163,28 @@ mod tests {
             "pwsh"
         );
         assert_eq!(program_name(r"C:\WINDOWS\system32\cmd.exe"), "cmd");
+    }
+
+    #[test]
+    fn arguments_of_drops_a_quoted_or_bare_program() {
+        let path = ExePath::new(r"C:\tools\x.exe".to_string());
+        assert_eq!(
+            arguments_of(r#""C:\tools\x.exe" -a "b c""#, &path),
+            r#"-a "b c""#
+        );
+        assert_eq!(arguments_of(r"x.exe -a", &path), "-a");
+        assert_eq!(arguments_of(r#""C:\tools\x.exe" "#, &path), "");
+        assert_eq!(arguments_of("x.exe", &path), "");
+    }
+
+    #[test]
+    fn arguments_of_keeps_an_unquoted_program_path_with_spaces_whole() {
+        let path = ExePath::new(r"C:\Program Files\x\app.exe".to_string());
+        assert_eq!(arguments_of(r"c:\program files\x\app.exe -a", &path), "-a");
+        assert_eq!(arguments_of(r"C:\Program Files\x\app.exe", &path), "");
+        assert_eq!(
+            arguments_of(r"C:\Program Files\x\app.exe2 -a", &path),
+            r"Files\x\app.exe2 -a"
+        );
     }
 }

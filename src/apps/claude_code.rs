@@ -150,4 +150,12 @@ mod tests {
         assert_eq!(last_title(r#"{"type":"user"}"#, Path::new("x"))?, None);
         Ok(())
     }
+
+    #[test]
+    fn last_title_rejects_a_malformed_record() {
+        assert!(matches!(
+            last_title(r#"{"type":"ai-title","aiTitle":5}"#, Path::new("x")),
+            Err(Error::SessionRecord { .. })
+        ));
+    }
 }

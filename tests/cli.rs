@@ -4,6 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use rallypoint::model::VERSION;
+
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn run(local_app_data: &Path, args: &[&str]) -> Result<Output, std::io::Error> {
@@ -54,10 +56,10 @@ fn list_goes_on_past_a_session_it_cannot_read() -> TestResult {
     let local_app_data = tempfile::tempdir()?;
     let folder = sessions_folder(local_app_data.path())?;
     fs::write(folder.join("1.json"), r#"{"saved_at":1,"windows":[]}"#)?;
-    fs::write(
-        folder.join("2.json"),
-        r#"{"version":1,"saved_at":2,"focus":{"displayed":[],"focused":null},"windows":[]}"#,
-    )?;
+    let readable = format!(
+        r#"{{"version":{VERSION},"saved_at":2,"focus":{{"displayed":[],"focused":null}},"windows":[]}}"#
+    );
+    fs::write(folder.join("2.json"), readable)?;
     let output = run(local_app_data.path(), &["list"])?;
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8(output.stdout)?;

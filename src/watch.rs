@@ -107,14 +107,18 @@ pub fn watch(folder: &Path) -> Result<(), Error> {
 /// Captures and writes a session unless it is empty or holds the same windows as `last`. Returns the windows written.
 fn save(folder: &Path, last: Option<&[SavedWindow]>) -> Result<Option<Vec<SavedWindow>>, Error> {
     let captured = capture()?;
-    if captured.windows.is_empty() || last.is_some_and(|last| same_windows(last, &captured.windows))
-    {
+    if !worth_writing(&captured.windows, last) {
         return Ok(None);
     }
     let path = store::write(folder, &captured)?;
     store::prune(folder, KEEP)?;
     println!("{}", path.display());
     Ok(Some(captured.windows))
+}
+
+/// Whether `captured` is a new session: not empty, as while GlazeWM starts, and not the same windows as `last`.
+fn worth_writing(captured: &[SavedWindow], last: Option<&[SavedWindow]>) -> bool {
+    !captured.is_empty() && !last.is_some_and(|last| same_windows(last, captured))
 }
 
 fn signal_of(event: Result<Event, Error>) -> Signal {
@@ -224,4 +228,23 @@ unsafe extern "system" fn on_message(
     }
     // SAFETY: forwards the arguments Windows passed in. It answers TRUE to WM_QUERYENDSESSION.
     unsafe { DefWindowProcW(window, message, wparam, lparam) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures;
+
+    #[test]
+    fn worth_writing_skips_an_empty_or_unchanged_capture() {
+        let one = vec![fixtures::window("app", None)];
+        let two = vec![
+            fixtures::window("app", None),
+            fixtures::window("other", None),
+        ];
+        assert!(!worth_writing(&[], None));
+        assert!(worth_writing(&one, None));
+        assert!(!worth_writing(&one, Some(&one)));
+        assert!(worth_writing(&two, Some(&one)));
+    }
 }

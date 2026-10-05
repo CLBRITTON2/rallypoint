@@ -9,6 +9,7 @@ pub mod error;
 mod fixtures;
 mod glazewm;
 mod launch;
+pub mod list;
 pub mod model;
 mod plan;
 mod process;

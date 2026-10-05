@@ -11,15 +11,18 @@ use windows::core::BOOL;
 use crate::apps::{self, Kind, quoted};
 use crate::cwd;
 use crate::error::Error;
-use crate::model::{ExePath, Pane};
+use crate::model::{ExePath, Owner, Tab};
+use crate::plan::{Key, Launch, Start, TabKey};
 use crate::process::Processes;
 
 pub const PROCESS_NAME: &str = "WindowsTerminal";
+/// WindowsTerminal.exe is packaged and cannot be started, but its wt.exe alias on PATH can.
+const LAUNCHER: &str = "wt.exe";
 const PSEUDO_CONSOLE: &str = "PseudoConsoleWindow";
 
 /// A tab's shell and the Windows Terminal window it sits in.
 #[derive(PartialEq, Debug)]
-pub struct Tab {
+pub struct TabShell {
     pub window: isize,
     pub pid: u32,
 }
@@ -27,9 +30,9 @@ pub struct Tab {
 /// The tabs of the Windows Terminal window `handle`, among `tab_shells`, oldest first.
 pub fn saved_tabs(
     processes: &Processes,
-    tab_shells: &[Tab],
+    tab_shells: &[TabShell],
     handle: isize,
-) -> Result<Vec<Pane>, Error> {
+) -> Result<Vec<Tab>, Error> {
     let pids: Vec<u32> = tab_shells
         .iter()
         .filter(|tab| tab.window == handle)
@@ -42,22 +45,45 @@ pub fn saved_tabs(
             let is_shell_tab = process.executable_path.as_ref().is_some_and(|path| {
                 apps::kind_of(&apps::program_name(path.as_str())) == Kind::Shell
             });
-            Ok(Pane {
+            Ok(Tab {
                 cwd: match is_shell_tab {
                     true => cwd::of_process(process.pid)?,
                     false => None,
                 },
                 program: process.executable_path,
                 command_line: process.command_line,
-                resume: None,
             })
         })
         .collect()
 }
 
+/// The key of a Windows Terminal window, by who runs it and its tabs.
+pub fn key(owner: &Owner, tabs: &[Tab]) -> Key {
+    Key::WindowsTerminal {
+        owner: owner.clone(),
+        tabs: tabs
+            .iter()
+            .map(|tab| TabKey {
+                executable_path: tab.program.clone(),
+                cwd: tab.cwd.clone(),
+            })
+            .collect(),
+    }
+}
+
+/// Reopens a Windows Terminal window holding `tabs`.
+pub fn launch(owner: &Owner, tabs: &[Tab]) -> Launch {
+    Launch {
+        owner: owner.clone(),
+        program: LAUNCHER.to_string(),
+        arguments: launch_arguments(tabs),
+        start: Start::Detached,
+    }
+}
+
 /// wt.exe arguments opening one new window holding `tabs`. A shell tab runs its program alone, so a tab opened to run
 /// one command does not run it again. A tab with neither program nor command line is left out.
-pub fn launch_arguments(tabs: &[Pane]) -> String {
+fn launch_arguments(tabs: &[Tab]) -> String {
     let opened: Vec<String> = tabs
         .iter()
         .filter_map(|tab| {
@@ -86,8 +112,8 @@ pub fn launch_arguments(tabs: &[Pane]) -> String {
 }
 
 /// Every pseudo console window owned by another window, so the consoles of other hosts are left out.
-pub fn tab_shells() -> Result<Vec<Tab>, Error> {
-    let mut tabs: Vec<Tab> = Vec::new();
+pub fn tab_shells() -> Result<Vec<TabShell>, Error> {
+    let mut tabs: Vec<TabShell> = Vec::new();
     // SAFETY: `collect_tab` reads lparam as the `tabs` it points to, which outlives the call.
     unsafe { EnumWindows(Some(collect_tab), LPARAM(&raw mut tabs as isize)) }.map_err(
         |source| Error::Os {
@@ -100,8 +126,8 @@ pub fn tab_shells() -> Result<Vec<Tab>, Error> {
 }
 
 unsafe extern "system" fn collect_tab(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    // SAFETY: `tab_shells` passes a live `Vec<Tab>` as lparam, and EnumWindows calls back on its thread.
-    let tabs = unsafe { &mut *(lparam.0 as *mut Vec<Tab>) };
+    // SAFETY: `tab_shells` passes a live `Vec<TabShell>` as lparam, and EnumWindows calls back on its thread.
+    let tabs = unsafe { &mut *(lparam.0 as *mut Vec<TabShell>) };
     let mut class = [0u16; 64];
     // SAFETY: the buffer is a live local array, and its length bounds the write.
     let length = unsafe { GetClassNameW(hwnd, &mut class) };
@@ -119,7 +145,7 @@ unsafe extern "system" fn collect_tab(hwnd: HWND, lparam: LPARAM) -> BOOL {
     // SAFETY: `pid` is a live local the call writes once.
     unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
     if pid != 0 {
-        tabs.push(Tab {
+        tabs.push(TabShell {
             window: owner.0 as isize,
             pid,
         });

@@ -10,7 +10,8 @@ use serde::Deserialize;
 
 use crate::apps::{claude_code, quoted};
 use crate::error::Error;
-use crate::model::{Pane, Resume};
+use crate::model::{ExePath, Owner, Resume, WeztermPane};
+use crate::plan::{Key, Launch, SkipReason, Start};
 use crate::process::Process;
 
 pub const PROCESS_NAME: &str = "wezterm-gui";
@@ -29,24 +30,51 @@ struct ListedPane {
 }
 
 /// The panes of the wezterm window `process` draws, each with the Claude Code session it shows.
-pub fn saved_panes(owner_home: &Path, process: &Process) -> Result<Vec<Pane>, Error> {
+pub fn saved_panes(owner_home: &Path, process: &Process) -> Result<Vec<WeztermPane>, Error> {
     panes(&socket(owner_home, process.pid), process.pid)?
         .into_iter()
         .map(|pane| {
             let resume = claude_code::session_id(owner_home, &pane.cwd, &pane.title)?
                 .map(|session_id| Resume::ClaudeCode { session_id });
-            Ok(Pane {
-                program: None,
-                command_line: None,
-                cwd: Some(pane.cwd),
+            Ok(WeztermPane {
+                cwd: pane.cwd,
                 resume,
             })
         })
         .collect()
 }
 
+/// The key of a wezterm window, which its first pane alone tells apart.
+pub fn key(
+    executable_path: &ExePath,
+    owner: &Owner,
+    panes: &[WeztermPane],
+) -> Result<Key, SkipReason> {
+    let pane = panes.first().ok_or(SkipReason::NoPanes)?;
+    Ok(Key::Wezterm {
+        executable_path: executable_path.clone(),
+        owner: owner.clone(),
+        cwd: pane.cwd.clone(),
+    })
+}
+
+/// Reopens a wezterm window in `cwd`, resuming the Claude Code session of its first pane.
+pub fn launch(
+    executable_path: &ExePath,
+    owner: &Owner,
+    cwd: &Path,
+    panes: &[WeztermPane],
+) -> Launch {
+    Launch {
+        owner: owner.clone(),
+        program: executable_path.to_string(),
+        arguments: launch_arguments(cwd, panes.first().and_then(|pane| pane.resume.as_ref())),
+        start: Start::Detached,
+    }
+}
+
 /// `wezterm-gui.exe` arguments opening a window in `cwd` that resumes `resume`.
-pub fn launch_arguments(cwd: &Path, resume: Option<&Resume>) -> String {
+fn launch_arguments(cwd: &Path, resume: Option<&Resume>) -> String {
     let resume = resume
         .map(|Resume::ClaudeCode { session_id }| {
             format!(" -- {}", claude_code::resume_command(session_id))
@@ -145,6 +173,14 @@ mod tests {
         assert!(matches!(
             local_path("file://server/share/x"),
             Err(Error::PaneCwd { .. })
+        ));
+    }
+
+    #[test]
+    fn local_path_rejects_a_path_that_is_not_utf8() {
+        assert!(matches!(
+            local_path("file:///C:/%FF"),
+            Err(Error::PaneCwdEncoding { .. })
         ));
     }
 

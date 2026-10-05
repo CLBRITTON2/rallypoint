@@ -12,7 +12,7 @@ use crate::capture::{LiveWindow, Sources};
 use crate::error::Error;
 use crate::glazewm::{Client, Event};
 use crate::launch::{keep_output_from_launches, spawn};
-use crate::model::{Focus, SavedWindow, Session};
+use crate::model::{Focus, SavedWindow, Session, WindowState};
 use crate::plan::{SkipReason, assign, launch_key, launches};
 use crate::uncloak;
 
@@ -28,6 +28,9 @@ const SETTLE_LIMIT: Duration = Duration::from_secs(60);
 pub enum Outcome {
     AlreadyOpen,
     Launched,
+    /// Open after the launches, though rallypoint launched nothing for it: a packaged app or a program another
+    /// program started.
+    Appeared,
     Skipped(SkipReason),
     /// Shared, since one launch can bring back several windows.
     LaunchFailed(Rc<Error>),
@@ -46,7 +49,10 @@ pub struct Restored {
 
 impl Outcome {
     pub fn is_restored(&self) -> bool {
-        matches!(self, Outcome::AlreadyOpen | Outcome::Launched)
+        matches!(
+            self,
+            Outcome::AlreadyOpen | Outcome::Launched | Outcome::Appeared
+        )
     }
 }
 
@@ -55,6 +61,7 @@ impl fmt::Display for Outcome {
         match self {
             Outcome::AlreadyOpen => write!(f, "already open"),
             Outcome::Launched => write!(f, "launched"),
+            Outcome::Appeared => write!(f, "opened on its own"),
             Outcome::Skipped(reason) => write!(f, "skipped, {reason}"),
             Outcome::LaunchFailed(error) => write!(f, "launch failed, {error}"),
             Outcome::PlaceFailed(error) => write!(f, "open, but placing it failed, {error}"),
@@ -101,17 +108,26 @@ pub fn restore(session: &Session) -> Result<Restored, Error> {
         })
         .collect();
     Ok(Restored {
-        outcomes: outcomes(saved, &open, &found, &launch_failures, place_failures),
+        outcomes: outcomes(
+            saved,
+            &open,
+            &found,
+            &expected,
+            &launch_failures,
+            place_failures,
+        ),
         refocus: refocus(&mut sources, &session.focus),
     })
 }
 
 /// What became of each saved window: `open` and `found` are the open windows assigned before and after the launches,
-/// `launch_failures` the windows whose launch failed, and `place_failures` one entry per saved window.
+/// `launched` the windows a launch that started brings back, `launch_failures` the windows whose launch failed, and
+/// `place_failures` one entry per saved window.
 fn outcomes(
     saved: &[SavedWindow],
     open: &[Option<usize>],
     found: &[Option<usize>],
+    launched: &[usize],
     launch_failures: &[(usize, Rc<Error>)],
     place_failures: Vec<Option<Error>>,
 ) -> Vec<Outcome> {
@@ -127,14 +143,16 @@ fn outcomes(
                 place_failure,
                 was_open,
                 is_open,
+                launched.contains(&index),
                 launch_key(window),
                 launch_failure,
             ) {
                 (Some(error), ..) => Outcome::PlaceFailed(error),
                 (None, true, ..) => Outcome::AlreadyOpen,
-                (None, _, true, ..) => Outcome::Launched,
-                (None, _, _, Err(reason), _) => Outcome::Skipped(reason),
-                (None, _, _, _, Some((_, error))) => Outcome::LaunchFailed(Rc::clone(error)),
+                (None, _, true, true, ..) => Outcome::Launched,
+                (None, _, true, false, ..) => Outcome::Appeared,
+                (None, _, _, _, Err(reason), _) => Outcome::Skipped(reason),
+                (None, _, _, _, _, Some((_, error))) => Outcome::LaunchFailed(Rc::clone(error)),
                 (None, ..) => Outcome::NotSeen,
             }
         })
@@ -172,18 +190,30 @@ fn settle() -> Result<(), Error> {
     }
 }
 
-/// Moves `target` to the saved window's workspace and state, leaving alone what already matches, since a move to the
-/// workspace a window is on would still reorder it.
+/// One change that puts an open window where its saved window was.
+#[derive(PartialEq, Debug)]
+enum Placement<'a> {
+    Workspace(&'a str),
+    State(WindowState),
+}
+
+/// The changes that give open window `live` the workspace and state of `saved`, leaving alone what already matches,
+/// since a move to the workspace a window is on would still reorder it.
+fn placement<'a>(saved: &'a SavedWindow, live: &SavedWindow) -> Vec<Placement<'a>> {
+    let workspace =
+        (live.workspace != saved.workspace).then_some(Placement::Workspace(&saved.workspace));
+    let state = (live.state != saved.state).then_some(Placement::State(saved.state));
+    workspace.into_iter().chain(state).collect()
+}
+
 fn place(sources: &mut Sources, saved: &SavedWindow, target: &LiveWindow) -> Result<(), Error> {
-    if target.window.workspace != saved.workspace {
-        sources
-            .glazewm()
-            .move_to_workspace(&target.id, &saved.workspace)?;
-    }
-    if target.window.state != saved.state {
-        sources
-            .glazewm()
-            .set_state(&target.id, saved.state.into())?;
+    for change in placement(saved, &target.window) {
+        match change {
+            Placement::Workspace(workspace) => {
+                sources.glazewm().move_to_workspace(&target.id, workspace)?
+            }
+            Placement::State(state) => sources.glazewm().set_state(&target.id, state.into())?,
+        }
     }
     Ok(())
 }
@@ -267,9 +297,13 @@ mod tests {
             app("failed"),
             app("unseen"),
             app("misplaced"),
+            fixtures::window(
+                "appeared",
+                Some(r"C:\Program Files\WindowsApps\Example_1\app.exe"),
+            ),
         ];
-        let open = [Some(0), None, None, None, None, Some(1)];
-        let found = [Some(0), Some(2), None, None, None, Some(1)];
+        let open = [Some(0), None, None, None, None, Some(1), None];
+        let found = [Some(0), Some(2), None, None, None, Some(1), Some(3)];
         let launch_error = Rc::new(Error::ThreadGone { thread: "launch" });
         let place_failures = vec![
             None,
@@ -278,8 +312,16 @@ mod tests {
             None,
             None,
             Some(Error::ThreadGone { thread: "place" }),
+            None,
         ];
-        let outcomes = outcomes(&saved, &open, &found, &[(3, launch_error)], place_failures);
+        let outcomes = outcomes(
+            &saved,
+            &open,
+            &found,
+            &[1, 4],
+            &[(3, launch_error)],
+            place_failures,
+        );
         assert!(matches!(
             outcomes.as_slice(),
             [
@@ -289,8 +331,35 @@ mod tests {
                 Outcome::LaunchFailed(_),
                 Outcome::NotSeen,
                 Outcome::PlaceFailed(Error::ThreadGone { thread: "place" }),
+                Outcome::Appeared,
             ]
         ));
+    }
+
+    #[test]
+    fn placement_changes_only_what_differs() {
+        let saved = SavedWindow {
+            workspace: "2".to_string(),
+            state: WindowState::Floating,
+            ..fixtures::window("app", None)
+        };
+        let moved = SavedWindow {
+            workspace: "1".to_string(),
+            ..saved.clone()
+        };
+        let tiled = SavedWindow {
+            state: WindowState::Tiling,
+            ..moved.clone()
+        };
+        assert_eq!(placement(&saved, &saved), Vec::new());
+        assert_eq!(placement(&saved, &moved), vec![Placement::Workspace("2")]);
+        assert_eq!(
+            placement(&saved, &tiled),
+            vec![
+                Placement::Workspace("2"),
+                Placement::State(WindowState::Floating)
+            ]
+        );
     }
 
     #[test]

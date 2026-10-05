@@ -9,7 +9,7 @@ use crate::glazewm::State;
 
 /// The session format `capture` writes and `store::read` accepts. Bump it on any change an older rallypoint could
 /// misread, since a session of another version is refused rather than migrated.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 pub struct Session {
@@ -153,21 +153,30 @@ pub enum AppState {
     Shell {
         cwd: Option<PathBuf>,
     },
-    /// A terminal window: a wezterm window's panes or a Windows Terminal window's tabs, oldest first.
-    Terminal {
-        panes: Vec<Pane>,
+    /// A wezterm window, its panes oldest first.
+    Wezterm {
+        panes: Vec<WeztermPane>,
+    },
+    /// A Windows Terminal window, its tabs oldest first.
+    WindowsTerminal {
+        tabs: Vec<Tab>,
     },
 }
 
-/// One wezterm pane or Windows Terminal tab.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
-pub struct Pane {
-    /// The program the pane runs. None for a wezterm pane, and for a tab running a protected process.
+pub struct WeztermPane {
+    pub cwd: PathBuf,
+    pub resume: Option<Resume>,
+}
+
+/// A Windows Terminal tab.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct Tab {
+    /// None for a tab running a protected process.
     pub program: Option<ExePath>,
     pub command_line: Option<String>,
     /// None for a tab that is not a shell, and for a shell whose folder could not be read.
     pub cwd: Option<PathBuf>,
-    pub resume: Option<Resume>,
 }
 
 /// A program session a pane reopens into.

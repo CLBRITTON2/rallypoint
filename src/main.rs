@@ -9,8 +9,8 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use rallypoint::error::Error;
-use rallypoint::model::{SavedWindow, Session};
-use rallypoint::{capture, restore, store, watch};
+use rallypoint::model::Session;
+use rallypoint::{capture, list, restore, store, watch};
 
 const USAGE: &str = "usage: rallypoint save | rallypoint list | rallypoint restore [<session path>] | rallypoint watch";
 
@@ -50,13 +50,7 @@ fn list() -> Result<ExitCode, Error> {
     let mut unreadable: usize = 0;
     for path in store::newest_first(&store::sessions_folder()?)? {
         match store::read(&path) {
-            Ok(saved) => println!(
-                "{}\t{}\t{} windows on {} workspaces",
-                path.display(),
-                age(saved.saved_at, now),
-                saved.windows.len(),
-                workspace_count(&saved.windows)
-            ),
+            Ok(saved) => println!("{}", list::summary(&path, &saved, now)),
             Err(error) => {
                 unreadable += 1;
                 eprintln!("rallypoint: {error}");
@@ -89,63 +83,5 @@ fn restore(saved: Session) -> Result<ExitCode, Error> {
     match all_restored && restored.refocus.is_ok() {
         true => Ok(ExitCode::SUCCESS),
         false => Ok(ExitCode::from(1)),
-    }
-}
-
-/// How long before `now` a session saved at `saved_at` was written, in its largest whole unit, as `12 min ago`.
-fn age(saved_at: u64, now: u64) -> String {
-    let seconds = now.saturating_sub(saved_at) / 1000;
-    match seconds {
-        0..60 => format!("{seconds} s ago"),
-        60..3600 => format!("{} min ago", seconds / 60),
-        3600..86400 => format!("{} h ago", seconds / 3600),
-        _ => format!("{} d ago", seconds / 86400),
-    }
-}
-
-/// How many distinct workspaces `windows` sit on.
-fn workspace_count(windows: &[SavedWindow]) -> usize {
-    let mut names: Vec<&str> = windows
-        .iter()
-        .map(|window| window.workspace.as_str())
-        .collect();
-    names.sort_unstable();
-    names.dedup();
-    names.len()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rallypoint::model::{AppState, Owner, WindowState};
-
-    fn window(workspace: &str) -> SavedWindow {
-        SavedWindow {
-            workspace: workspace.to_string(),
-            process_name: "app".to_string(),
-            executable_path: None,
-            command_line: None,
-            owner: Owner::new("owner".to_string()),
-            title: String::new(),
-            class_name: String::new(),
-            state: WindowState::Tiling,
-            app: AppState::Program,
-        }
-    }
-
-    #[test]
-    fn age_uses_the_largest_whole_unit() {
-        assert_eq!(age(0, 59_999), "59 s ago");
-        assert_eq!(age(0, 60_000), "1 min ago");
-        assert_eq!(age(0, 3_599_999), "59 min ago");
-        assert_eq!(age(0, 7_200_000), "2 h ago");
-        assert_eq!(age(0, 86_400_000), "1 d ago");
-        assert_eq!(age(5_000, 1_000), "0 s ago");
-    }
-
-    #[test]
-    fn workspace_count_counts_each_name_once() {
-        let windows = [window("2"), window("1"), window("2")];
-        assert_eq!(workspace_count(&windows), 2);
     }
 }

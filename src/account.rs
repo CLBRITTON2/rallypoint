@@ -41,17 +41,25 @@ pub fn current_user() -> Result<Owner, Error> {
 
 /// The profile folder of `owner`, from its SID's entry in the registry profile list, so no user folder is assumed.
 pub fn home_of(owner: &Owner) -> Result<PathBuf, Error> {
+    profile_of(&sid_of(owner)?)
+}
+
+/// The `ProfileImagePath` of string SID `sid`, UTF-16 without a terminating null.
+fn profile_of(sid: &[u16]) -> Result<PathBuf, Error> {
     let os_error = |call: &'static str| {
         move |source| Error::Os {
             call,
-            context: format!("finding the profile folder of {owner}"),
+            context: format!(
+                "finding the profile folder of SID {}",
+                String::from_utf16_lossy(sid)
+            ),
             source,
         }
     };
     let subkey: Vec<u16> = PROFILE_LIST
         .encode_utf16()
         .chain([u16::from(b'\\')])
-        .chain(sid_of(owner)?)
+        .chain(sid.iter().copied())
         .chain([0])
         .collect();
     let mut size: u32 = 0;
@@ -158,9 +166,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn home_of_the_current_user_is_its_profile() -> Result<(), Box<dyn std::error::Error>> {
-        let profile = std::env::var_os("USERPROFILE").ok_or("USERPROFILE is not set")?;
-        assert_eq!(home_of(&current_user()?)?, PathBuf::from(profile));
+    fn profile_of_local_system_is_the_system_profile() -> Result<(), Error> {
+        let local_system: Vec<u16> = "S-1-5-18".encode_utf16().collect();
+        let profile = profile_of(&local_system)?.display().to_string();
+        assert!(
+            profile
+                .to_lowercase()
+                .ends_with(r"\system32\config\systemprofile"),
+            "{profile}"
+        );
         Ok(())
     }
 }

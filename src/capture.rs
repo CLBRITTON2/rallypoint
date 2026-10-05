@@ -46,11 +46,11 @@ impl Sources {
             for window in workspace.windows() {
                 let process = self.processes.of_window(window.handle)?;
                 let app = match apps::kind_of(&window.process_name) {
-                    Kind::Wezterm => AppState::Terminal {
+                    Kind::Wezterm => AppState::Wezterm {
                         panes: wezterm::saved_panes(&account::home_of(&process.owner)?, &process)?,
                     },
-                    Kind::WindowsTerminal => AppState::Terminal {
-                        panes: windows_terminal::saved_tabs(
+                    Kind::WindowsTerminal => AppState::WindowsTerminal {
+                        tabs: windows_terminal::saved_tabs(
                             &self.processes,
                             &tab_shells,
                             window.handle,

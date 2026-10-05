@@ -127,7 +127,9 @@ pub fn prune(folder: &Path, keep: usize) -> Result<(), Error> {
 mod tests {
     use super::*;
     use crate::fixtures;
-    use crate::model::{AppState, ExePath, Focus, Pane, Resume, SavedWindow, WindowState};
+    use crate::model::{
+        AppState, ExePath, Focus, Resume, SavedWindow, Tab, WeztermPane, WindowState,
+    };
 
     fn sessions_saved_at(folder: &Path, saved_at: &[u64]) -> Result<(), Error> {
         for &saved_at in saved_at {
@@ -176,13 +178,16 @@ mod tests {
     #[test]
     fn a_written_session_reads_back() -> Result<(), Box<dyn std::error::Error>> {
         let folder = tempfile::tempdir()?;
-        let pane = Pane {
-            program: Some(ExePath::new(r"C:\tools\shell.exe".to_string())),
-            command_line: None,
-            cwd: Some(PathBuf::from(r"C:\work\project")),
+        let pane = WeztermPane {
+            cwd: PathBuf::from(r"C:\work\project"),
             resume: Some(Resume::ClaudeCode {
                 session_id: "id".to_string(),
             }),
+        };
+        let tab = Tab {
+            program: Some(ExePath::new(r"C:\tools\shell.exe".to_string())),
+            command_line: None,
+            cwd: Some(PathBuf::from(r"C:\work\project")),
         };
         let windows = vec![
             fixtures::window("app", Some(r"C:\tools\app.exe")),
@@ -192,8 +197,12 @@ mod tests {
                 ..fixtures::window("shell", None)
             },
             SavedWindow {
-                app: AppState::Terminal { panes: vec![pane] },
-                ..fixtures::window("terminal", None)
+                app: AppState::Wezterm { panes: vec![pane] },
+                ..fixtures::window("wezterm", None)
+            },
+            SavedWindow {
+                app: AppState::WindowsTerminal { tabs: vec![tab] },
+                ..fixtures::window("windows terminal", None)
             },
         ];
         let session = Session {
@@ -221,6 +230,26 @@ mod tests {
         let folder = root.path().join("missing");
         assert_eq!(newest_first(&folder)?, Vec::<PathBuf>::new());
         assert!(matches!(latest(&folder), Err(Error::NoSession { .. })));
+        Ok(())
+    }
+
+    #[test]
+    fn a_stray_json_file_is_not_a_session() -> Result<(), Box<dyn std::error::Error>> {
+        let folder = tempfile::tempdir()?;
+        fs::write(folder.path().join("x.json"), "{}")?;
+        assert!(matches!(
+            newest_first(folder.path()),
+            Err(Error::SessionName { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn read_refuses_a_file_that_is_not_json() -> Result<(), Box<dyn std::error::Error>> {
+        let folder = tempfile::tempdir()?;
+        let path = folder.path().join("1.json");
+        fs::write(&path, "not json")?;
+        assert!(matches!(read(&path), Err(Error::Decode { .. })));
         Ok(())
     }
 
