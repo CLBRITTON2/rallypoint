@@ -51,6 +51,8 @@ pub enum Error {
     AccountName(#[source] std::string::FromUtf16Error),
     #[error("GetOwner of process {pid} returned {code}")]
     Owner { pid: u32, code: u32 },
+    #[error("GetOwner of process {pid} succeeded but named no user")]
+    OwnerUnnamed { pid: u32 },
     #[error("the environment variable {name} is not set")]
     Env { name: &'static str },
     #[error("running {program} failed: {source}")]

@@ -73,6 +73,7 @@ impl Processes {
             })?;
         let user = match (owner.return_value, owner.user) {
             (0, Some(user)) => user,
+            (0, None) => return Err(Error::OwnerUnnamed { pid }),
             (code, _) => return Err(Error::Owner { pid, code }),
         };
         Ok(Process {

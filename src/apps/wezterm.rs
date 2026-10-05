@@ -9,6 +9,7 @@ use percent_encoding::percent_decode_str;
 use serde::Deserialize;
 
 use crate::apps::{claude_code, quoted};
+use crate::cwd;
 use crate::error::Error;
 use crate::model::{ExePath, Owner, Resume, WeztermPane};
 use crate::plan::{Key, Launch, SkipReason, Start};
@@ -131,7 +132,8 @@ fn single_window(listed: Vec<ListedPane>, pid: u32) -> Result<Vec<LivePane>, Err
         .collect()
 }
 
-/// The path of a `file:///C:/...` URI, without the trailing separator wezterm reports for a folder.
+/// The path of a `file:///C:/...` URI, without the trailing separator wezterm reports for a folder unless it is a
+/// drive root's.
 fn local_path(cwd: &str) -> Result<PathBuf, Error> {
     let not_local = || Error::PaneCwd {
         cwd: cwd.to_string(),
@@ -144,7 +146,7 @@ fn local_path(cwd: &str) -> Result<PathBuf, Error> {
             source,
         })?
         .replace('/', "\\");
-    Ok(PathBuf::from(path.trim_end_matches('\\')))
+    Ok(cwd::folder(&path.encode_utf16().collect::<Vec<u16>>()))
 }
 
 #[cfg(test)]
@@ -165,6 +167,7 @@ mod tests {
             local_path("file:///C:/Program%20Files/x/")?,
             PathBuf::from(r"C:\Program Files\x")
         );
+        assert_eq!(local_path("file:///C:/")?, PathBuf::from(r"C:\"));
         Ok(())
     }
 

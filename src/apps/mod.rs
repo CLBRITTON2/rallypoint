@@ -73,6 +73,7 @@ pub fn key(window: &SavedWindow) -> Result<Key, SkipReason> {
         }),
         (Kind::Program, AppState::Program) => Ok(Key::Program {
             executable_path: executable_path.clone(),
+            owner: window.owner.clone(),
         }),
         // Every variant by name, so a new one fails to compile here instead of being skipped.
         (
@@ -105,8 +106,11 @@ pub fn launch(window: &SavedWindow, key: &Key) -> Launch {
             arguments: String::new(),
             start: Start::Console { cwd: cwd.clone() },
         },
-        Key::Program { executable_path } => Launch {
-            owner: window.owner.clone(),
+        Key::Program {
+            executable_path,
+            owner,
+        } => Launch {
+            owner: owner.clone(),
             program: executable_path.clone(),
             arguments: window
                 .command_line

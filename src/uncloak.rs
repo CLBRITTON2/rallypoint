@@ -56,7 +56,7 @@ unsafe trait IApplicationView: IUnknown {
 #[derive(PartialEq, Debug)]
 struct Hidden {
     handle: isize,
-    executable_path: Option<ExePath>,
+    executable_path: ExePath,
 }
 
 /// Uncloaks every hidden window GlazeWM does not manage whose program a saved window runs, and returns how many it
@@ -72,7 +72,9 @@ pub fn adopt(sources: &mut Sources, saved: &[SavedWindow]) -> Result<usize, Erro
     let mut hidden = Vec::new();
     for handle in shell_cloaked()? {
         let executable_path = match sources.processes().executable_path_of_window(handle) {
-            Ok(executable_path) => executable_path,
+            Ok(Some(executable_path)) => executable_path,
+            // A protected process, which no saved window can name.
+            Ok(None) => continue,
             // Closed since the enumeration, so there is nothing left to uncloak.
             Err(Error::NoProcess { .. } | Error::ProcessGone { .. }) => continue,
             Err(error) => return Err(error),
@@ -97,12 +99,7 @@ pub fn adopt(sources: &mut Sources, saved: &[SavedWindow]) -> Result<usize, Erro
     for window in &chosen {
         eprintln!(
             "rallypoint: uncloaked window handle {} of {}",
-            window.handle,
-            window
-                .executable_path
-                .as_ref()
-                .map(ExePath::as_str)
-                .unwrap_or_default()
+            window.handle, window.executable_path
         );
     }
     Ok(chosen.len())
@@ -126,10 +123,9 @@ fn to_uncloak<'a>(
         .iter()
         .filter(|window| !managed.contains(&window.handle))
         .filter(|window| {
-            window.executable_path.is_some()
-                && saved
-                    .iter()
-                    .any(|saved| saved.executable_path == window.executable_path)
+            saved
+                .iter()
+                .any(|saved| saved.executable_path.as_ref() == Some(&window.executable_path))
         })
         .collect()
 }
@@ -222,20 +218,19 @@ mod tests {
     use super::*;
     use crate::fixtures;
 
-    fn hidden(handle: isize, executable_path: Option<&str>) -> Hidden {
+    fn hidden(handle: isize, executable_path: &str) -> Hidden {
         Hidden {
             handle,
-            executable_path: executable_path.map(|path| ExePath::new(path.to_string())),
+            executable_path: ExePath::new(executable_path.to_string()),
         }
     }
 
     #[test]
     fn to_uncloak_takes_unmanaged_windows_of_saved_programs_only() {
         let windows = vec![
-            hidden(1, Some(r"C:\tools\app.exe")),
-            hidden(2, Some(r"C:\tools\app.exe")),
-            hidden(3, Some(r"C:\tools\other.exe")),
-            hidden(4, None),
+            hidden(1, r"C:\tools\app.exe"),
+            hidden(2, r"C:\tools\app.exe"),
+            hidden(3, r"C:\tools\other.exe"),
         ];
         let saved = vec![fixtures::window("app", Some(r"C:\tools\app.exe"))];
         let handles: Vec<isize> = to_uncloak(&windows, &[2], &saved)
@@ -256,8 +251,8 @@ mod tests {
     }
 
     #[test]
-    fn to_uncloak_never_matches_a_protected_process() {
+    fn to_uncloak_never_matches_a_protected_saved_window() {
         let protected = fixtures::window("app", None);
-        assert!(to_uncloak(&[hidden(1, None)], &[], &[protected]).is_empty());
+        assert!(to_uncloak(&[hidden(1, r"C:\tools\app.exe")], &[], &[protected]).is_empty());
     }
 }

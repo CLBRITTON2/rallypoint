@@ -25,8 +25,11 @@ pub enum Key {
     /// A Windows Terminal window, by who runs it and its tabs. No tabs is a window save found no tab shells in,
     /// matching any.
     WindowsTerminal { owner: Owner, tabs: Vec<TabKey> },
-    /// Any other window, by its program. Its windows are told apart only by order.
-    Program { executable_path: ExePath },
+    /// Any other window, by who runs it and its program. Its windows are told apart only by order.
+    Program {
+        executable_path: ExePath,
+        owner: Owner,
+    },
 }
 
 /// Why restore leaves a saved window alone.
@@ -112,9 +115,9 @@ impl Launch {
 pub fn launch_key(window: &SavedWindow) -> Result<Key, SkipReason> {
     let key = apps::key(window)?;
     match &key {
-        Key::Program { executable_path } if executable_path.is_packaged() => {
-            Err(SkipReason::Packaged)
-        }
+        Key::Program {
+            executable_path, ..
+        } if executable_path.is_packaged() => Err(SkipReason::Packaged),
         _ => Ok(key),
     }
 }
@@ -391,6 +394,30 @@ mod tests {
                     vec![3]
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn launches_start_a_program_once_per_owner() {
+        let other = SavedWindow {
+            owner: Owner::new("other".to_string()),
+            ..program(r"C:\f.exe", "")
+        };
+        let saved = vec![program(r"C:\f.exe", ""), other.clone()];
+        let owners: Vec<(Owner, Vec<usize>)> = launches(&saved, &[None, None])
+            .into_iter()
+            .map(|(launch, windows)| (launch.owner, windows))
+            .collect();
+        assert_eq!(
+            owners,
+            vec![
+                (Owner::new("owner".to_string()), vec![0]),
+                (other.owner.clone(), vec![1])
+            ]
+        );
+        assert_eq!(
+            assign(&[other], &[live(program(r"C:\f.exe", ""))]),
+            vec![None]
         );
     }
 

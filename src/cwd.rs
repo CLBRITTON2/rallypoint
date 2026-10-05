@@ -127,7 +127,7 @@ fn cwd_error(pid: u32, call: &'static str) -> impl FnOnce(windows::core::Error) 
 
 /// A UTF-16 DOS path without the trailing backslash Windows keeps on a working directory, except a drive root's,
 /// since `C:` alone means that drive's current folder.
-fn folder(dos_path: &[u16]) -> PathBuf {
+pub fn folder(dos_path: &[u16]) -> PathBuf {
     let backslash = u16::from(b'\\');
     let colon = u16::from(b':');
     match dos_path.split_last() {
