@@ -86,7 +86,7 @@ pub struct TabKey {
 #[derive(PartialEq, Debug)]
 pub struct Launch {
     pub owner: Owner,
-    pub program: String,
+    pub program: ExePath,
     /// Passed verbatim, so the saved command line's quoting survives.
     pub arguments: String,
     pub start: Start,
@@ -269,6 +269,7 @@ mod tests {
     }
 
     const PWSH: &str = r"C:\Program Files\PowerShell\7\pwsh.exe";
+    const PACKAGED: &str = r"C:\Program Files\WindowsApps\Example_1\app.exe";
 
     #[test]
     fn launches_open_each_windows_terminal_window_with_its_tabs() {
@@ -327,7 +328,7 @@ mod tests {
     fn launches_open_each_shell_in_its_folder_without_its_arguments() {
         let saved = vec![shell(Some(r"C:\work\project")), shell(None)];
         let planned: Vec<(Launch, Vec<usize>)> = launches(&saved, &[None, None]);
-        let program = r"C:\Program Files\PowerShell\7\pwsh.exe".to_string();
+        let program = ExePath::new(PWSH.to_string());
         let expected = |cwd: Option<&str>, index: usize| {
             (
                 Launch {
@@ -400,10 +401,7 @@ mod tests {
             ..program("", "")
         };
         assert!(matches!(launch_key(&protected), Err(SkipReason::Protected)));
-        let packaged = program(
-            r"C:\Program Files\windowsapps\Microsoft.WindowsTerminal_1\wt.exe",
-            "",
-        );
+        let packaged = program(PACKAGED, "");
         assert!(matches!(launch_key(&packaged), Err(SkipReason::Packaged)));
         let paneless = SavedWindow {
             app: AppState::Wezterm { panes: Vec::new() },
@@ -428,9 +426,8 @@ mod tests {
 
     #[test]
     fn assign_matches_an_open_packaged_app() {
-        let packaged = r"C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1\wt.exe";
-        let saved = vec![program(packaged, "")];
-        let open = vec![live(program(packaged, ""))];
+        let saved = vec![program(PACKAGED, "")];
+        let open = vec![live(program(PACKAGED, ""))];
         assert_eq!(assign(&saved, &open), vec![Some(0)]);
     }
 }

@@ -2,6 +2,7 @@
 //! instead of launching their programs again. A clean exit skips GlazeWM's watcher cleanup, so every window on an
 //! unfocused workspace stays shell-cloaked, unseen and unmanaged.
 
+use std::any::Any;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::thread;
@@ -89,7 +90,10 @@ pub fn adopt(sources: &mut Sources, saved: &[SavedWindow]) -> Result<usize, Erro
     // The wmi crate puts the process in the MTA, and the shell's view collection wants an STA thread.
     thread::spawn(move || uncloak(&handles))
         .join()
-        .map_err(|_panic| Error::ThreadPanicked { thread: "uncloak" })??;
+        .map_err(|payload| Error::ThreadPanicked {
+            thread: "uncloak",
+            message: panic_message(payload.as_ref()),
+        })??;
     for window in &chosen {
         eprintln!(
             "rallypoint: uncloaked window handle {} of {}",
@@ -102,6 +106,15 @@ pub fn adopt(sources: &mut Sources, saved: &[SavedWindow]) -> Result<usize, Erro
         );
     }
     Ok(chosen.len())
+}
+
+/// The text a panic carries: a `panic!` with a literal passes a `&str`, one with arguments a `String`.
+fn panic_message(payload: &(dyn Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|message| (*message).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a payload that is not text".to_string())
 }
 
 fn to_uncloak<'a>(
@@ -230,6 +243,16 @@ mod tests {
             .map(|window| window.handle)
             .collect();
         assert_eq!(handles, vec![1]);
+    }
+
+    #[test]
+    fn panic_message_reads_a_str_or_string_payload() {
+        let literal: Box<dyn Any + Send> = Box::new("literal");
+        let formatted: Box<dyn Any + Send> = Box::new("formatted".to_string());
+        let other: Box<dyn Any + Send> = Box::new(1_u8);
+        assert_eq!(panic_message(literal.as_ref()), "literal");
+        assert_eq!(panic_message(formatted.as_ref()), "formatted");
+        assert_eq!(panic_message(other.as_ref()), "a payload that is not text");
     }
 
     #[test]

@@ -75,7 +75,7 @@ pub fn key(owner: &Owner, tabs: &[Tab]) -> Key {
 pub fn launch(owner: &Owner, tabs: &[Tab]) -> Launch {
     Launch {
         owner: owner.clone(),
-        program: LAUNCHER.to_string(),
+        program: ExePath::new(LAUNCHER.to_string()),
         arguments: launch_arguments(tabs),
         start: Start::Detached,
     }

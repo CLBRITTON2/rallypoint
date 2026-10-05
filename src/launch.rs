@@ -56,7 +56,7 @@ pub fn spawn(launch: &Launch, user: &Owner) -> Result<(), Error> {
 
 fn spawn_detached(launch: &Launch) -> Result<(), Error> {
     // Electron apps log to an inherited console, which would bury the report.
-    Command::new(&launch.program)
+    Command::new(launch.program.as_str())
         .raw_arg(&launch.arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::null())

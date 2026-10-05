@@ -67,7 +67,7 @@ pub fn launch(
 ) -> Launch {
     Launch {
         owner: owner.clone(),
-        program: executable_path.to_string(),
+        program: executable_path.clone(),
         arguments: launch_arguments(cwd, panes.first().and_then(|pane| pane.resume.as_ref())),
         start: Start::Detached,
     }

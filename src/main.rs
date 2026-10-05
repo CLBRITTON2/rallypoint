@@ -39,7 +39,9 @@ fn main() -> ExitCode {
 }
 
 fn save() -> Result<ExitCode, Error> {
-    let path = store::write(&store::sessions_folder()?, &capture::capture()?)?;
+    let folder = store::sessions_folder()?;
+    let session = capture::capture()?;
+    let path = store::write(&folder, &session)?;
     println!("{}", path.display());
     Ok(ExitCode::SUCCESS)
 }

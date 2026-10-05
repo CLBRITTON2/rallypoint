@@ -127,8 +127,11 @@ pub enum Error {
     NoView { handle: isize },
     #[error("the {thread} thread stopped without reporting why")]
     ThreadGone { thread: &'static str },
-    #[error("the {thread} thread panicked")]
-    ThreadPanicked { thread: &'static str },
+    #[error("the {thread} thread panicked: {message}")]
+    ThreadPanicked {
+        thread: &'static str,
+        message: String,
+    },
     #[error("{failures} saves in a row failed, the last with: {source}")]
     SavesFailing {
         failures: u32,

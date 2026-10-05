@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -14,10 +15,31 @@ pub const VERSION: u32 = 2;
 #[derive(Serialize, Deserialize)]
 pub struct Session {
     pub version: u32,
-    /// Unix milliseconds.
-    pub saved_at: u64,
+    pub saved_at: UnixMillis,
     pub focus: Focus,
     pub windows: Vec<SavedWindow>,
+}
+
+/// A moment as milliseconds since the Unix epoch.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[serde(transparent)]
+pub struct UnixMillis(u64);
+
+impl UnixMillis {
+    pub fn new(millis: u64) -> UnixMillis {
+        UnixMillis(millis)
+    }
+
+    /// How long after `earlier` this moment is, zero when it is not after it.
+    pub fn since(self, earlier: UnixMillis) -> Duration {
+        Duration::from_millis(self.0.saturating_sub(earlier.0))
+    }
+}
+
+impl fmt::Display for UnixMillis {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
 }
 
 /// Which workspaces were on screen.

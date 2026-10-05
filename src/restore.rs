@@ -99,64 +99,64 @@ pub fn restore(session: &Session) -> Result<Restored, Error> {
     }
     let live = wait(&mut sources, saved, &expected)?;
     let found = assign(saved, &live);
-    let place_failures: Vec<Option<Error>> = saved
+    let outcomes: Vec<Outcome> = saved
         .iter()
+        .enumerate()
         .zip(&found)
-        .map(|(window, index)| {
-            let target = index.and_then(|index| live.get(index))?;
-            place(&mut sources, window, target).err()
+        .map(|((index, window), found)| {
+            let target = found.and_then(|found| live.get(found));
+            let steps = Steps {
+                was_open: open.get(index).is_some_and(Option::is_some),
+                launched: expected.contains(&index),
+                launch_failure: launch_failures
+                    .iter()
+                    .find(|(failed, _)| *failed == index)
+                    .map(|(_, error)| Rc::clone(error)),
+                is_open: target.is_some(),
+                place_failure: target.and_then(|target| place(&mut sources, window, target).err()),
+            };
+            outcome(window, steps)
         })
         .collect();
     Ok(Restored {
-        outcomes: outcomes(
-            saved,
-            &open,
-            &found,
-            &expected,
-            &launch_failures,
-            place_failures,
-        ),
+        outcomes,
         refocus: refocus(&mut sources, &session.focus),
     })
 }
 
-/// What became of each saved window: `open` and `found` are the open windows assigned before and after the launches,
-/// `launched` the windows a launch that started brings back, `launch_failures` the windows whose launch failed, and
-/// `place_failures` one entry per saved window.
-fn outcomes(
-    saved: &[SavedWindow],
-    open: &[Option<usize>],
-    found: &[Option<usize>],
-    launched: &[usize],
-    launch_failures: &[(usize, Rc<Error>)],
-    place_failures: Vec<Option<Error>>,
-) -> Vec<Outcome> {
-    saved
-        .iter()
-        .zip(place_failures)
-        .enumerate()
-        .map(|(index, (window, place_failure))| {
-            let was_open = open.get(index).is_some_and(Option::is_some);
-            let is_open = found.get(index).is_some_and(Option::is_some);
-            let launch_failure = launch_failures.iter().find(|(failed, _)| *failed == index);
-            match (
-                place_failure,
-                was_open,
-                is_open,
-                launched.contains(&index),
-                launch_key(window),
-                launch_failure,
-            ) {
-                (Some(error), ..) => Outcome::PlaceFailed(error),
-                (None, true, ..) => Outcome::AlreadyOpen,
-                (None, _, true, true, ..) => Outcome::Launched,
-                (None, _, true, false, ..) => Outcome::Appeared,
-                (None, _, _, _, Err(reason), _) => Outcome::Skipped(reason),
-                (None, _, _, _, _, Some((_, error))) => Outcome::LaunchFailed(Rc::clone(error)),
-                (None, ..) => Outcome::NotSeen,
-            }
-        })
-        .collect()
+/// What each step of a restore found for one saved window.
+#[derive(Default)]
+struct Steps {
+    /// Open before the launches.
+    was_open: bool,
+    /// Brought back by a launch that started.
+    launched: bool,
+    launch_failure: Option<Rc<Error>>,
+    /// Open after the launches.
+    is_open: bool,
+    place_failure: Option<Error>,
+}
+
+/// What became of `window`, given what each restore step found for it.
+fn outcome(window: &SavedWindow, steps: Steps) -> Outcome {
+    match steps {
+        Steps {
+            place_failure: Some(error),
+            ..
+        } => Outcome::PlaceFailed(error),
+        Steps { was_open: true, .. } => Outcome::AlreadyOpen,
+        Steps {
+            is_open: true,
+            launched: true,
+            ..
+        } => Outcome::Launched,
+        Steps { is_open: true, .. } => Outcome::Appeared,
+        Steps { launch_failure, .. } => match (launch_key(window), launch_failure) {
+            (Err(reason), _) => Outcome::Skipped(reason),
+            (Ok(_), Some(error)) => Outcome::LaunchFailed(error),
+            (Ok(_), None) => Outcome::NotSeen,
+        },
+    }
 }
 
 /// Blocks until GlazeWM has managed no new window for [`QUIET`], so the apps still starting at login are matched as
@@ -221,7 +221,8 @@ fn place(sources: &mut Sources, saved: &SavedWindow, target: &LiveWindow) -> Res
 /// Shows each saved displayed workspace on its monitor and focuses the saved focused one.
 fn refocus(sources: &mut Sources, focus: &Focus) -> Result<(), Error> {
     for workspace in focus_order(focus) {
-        if sources.focus()?.focused.as_deref() != Some(workspace) {
+        let live = sources.focus()?;
+        if live.focused.as_deref() != Some(workspace) {
             sources.glazewm().focus_workspace(workspace)?;
         }
     }
@@ -288,51 +289,67 @@ mod tests {
     use crate::fixtures;
 
     #[test]
-    fn outcomes_report_each_window_by_what_happened_to_it() {
-        let app = |name: &str| fixtures::window(name, Some(r"C:\tools\app.exe"));
-        let saved = vec![
-            app("open"),
-            app("launched"),
-            fixtures::window("protected", None),
-            app("failed"),
-            app("unseen"),
-            app("misplaced"),
-            fixtures::window(
-                "appeared",
-                Some(r"C:\Program Files\WindowsApps\Example_1\app.exe"),
-            ),
-        ];
-        let open = [Some(0), None, None, None, None, Some(1), None];
-        let found = [Some(0), Some(2), None, None, None, Some(1), Some(3)];
-        let launch_error = Rc::new(Error::ThreadGone { thread: "launch" });
-        let place_failures = vec![
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(Error::ThreadGone { thread: "place" }),
-            None,
-        ];
-        let outcomes = outcomes(
-            &saved,
-            &open,
-            &found,
-            &[1, 4],
-            &[(3, launch_error)],
-            place_failures,
+    fn outcome_reports_a_window_by_what_happened_to_it() {
+        let app = fixtures::window("app", Some(r"C:\tools\app.exe"));
+        let protected = fixtures::window("protected", None);
+        let packaged = fixtures::window(
+            "packaged",
+            Some(r"C:\Program Files\WindowsApps\Example_1\app.exe"),
         );
+        let open = || Steps {
+            was_open: true,
+            is_open: true,
+            ..Steps::default()
+        };
+        assert!(matches!(outcome(&app, open()), Outcome::AlreadyOpen));
         assert!(matches!(
-            outcomes.as_slice(),
-            [
-                Outcome::AlreadyOpen,
-                Outcome::Launched,
-                Outcome::Skipped(SkipReason::Protected),
-                Outcome::LaunchFailed(_),
-                Outcome::NotSeen,
-                Outcome::PlaceFailed(Error::ThreadGone { thread: "place" }),
-                Outcome::Appeared,
-            ]
+            outcome(
+                &app,
+                Steps {
+                    place_failure: Some(Error::ThreadGone { thread: "place" }),
+                    ..open()
+                }
+            ),
+            Outcome::PlaceFailed(Error::ThreadGone { thread: "place" })
+        ));
+        let launched = || Steps {
+            launched: true,
+            ..Steps::default()
+        };
+        assert!(matches!(
+            outcome(
+                &app,
+                Steps {
+                    is_open: true,
+                    ..launched()
+                }
+            ),
+            Outcome::Launched
+        ));
+        assert!(matches!(outcome(&app, launched()), Outcome::NotSeen));
+        assert!(matches!(
+            outcome(
+                &app,
+                Steps {
+                    launch_failure: Some(Rc::new(Error::ThreadGone { thread: "launch" })),
+                    ..Steps::default()
+                }
+            ),
+            Outcome::LaunchFailed(_)
+        ));
+        assert!(matches!(
+            outcome(&protected, Steps::default()),
+            Outcome::Skipped(SkipReason::Protected)
+        ));
+        assert!(matches!(
+            outcome(
+                &packaged,
+                Steps {
+                    is_open: true,
+                    ..Steps::default()
+                }
+            ),
+            Outcome::Appeared
         ));
     }
 

@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 
 use crate::error::Error;
-use crate::model::{Session, VERSION};
+use crate::model::{Session, UnixMillis, VERSION};
 
 /// The part of a session file read before the rest, so a session of another version fails on its version instead
 /// of on whichever field changed. Sessions saved before versioning have none.
@@ -17,12 +17,12 @@ struct Header {
     version: Option<u32>,
 }
 
-/// The current time in Unix milliseconds, the unit of `saved_at`.
-pub fn now() -> Result<u64, Error> {
+pub fn now() -> Result<UnixMillis, Error> {
     let since_epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(Error::Clock)?;
-    u64::try_from(since_epoch.as_millis()).map_err(Error::ClockRange)
+    let millis = u64::try_from(since_epoch.as_millis()).map_err(Error::ClockRange)?;
+    Ok(UnixMillis::new(millis))
 }
 
 /// Every session file in `folder`, oldest first. None when `folder` does not exist, as before the first save.
@@ -36,7 +36,7 @@ fn saved_paths(folder: &Path) -> Result<Vec<PathBuf>, Error> {
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(read_error(error)),
     };
-    let mut saved: Vec<(u64, PathBuf)> = Vec::new();
+    let mut saved: Vec<(UnixMillis, PathBuf)> = Vec::new();
     for entry in entries {
         let path = entry.map_err(read_error)?.path();
         if path.extension().is_none_or(|extension| extension != "json") {
@@ -46,6 +46,7 @@ fn saved_paths(folder: &Path) -> Result<Vec<PathBuf>, Error> {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .and_then(|stem| stem.parse::<u64>().ok())
+            .map(UnixMillis::new)
             .ok_or_else(|| Error::SessionName { path: path.clone() })?;
         saved.push((saved_at, path));
     }
@@ -137,7 +138,7 @@ mod tests {
                 folder,
                 &Session {
                     version: VERSION,
-                    saved_at,
+                    saved_at: UnixMillis::new(saved_at),
                     focus: Focus::default(),
                     windows: Vec::new(),
                 },
@@ -207,7 +208,7 @@ mod tests {
         ];
         let session = Session {
             version: VERSION,
-            saved_at: 7,
+            saved_at: UnixMillis::new(7),
             focus: Focus::default(),
             windows: windows.clone(),
         };

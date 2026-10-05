@@ -37,13 +37,19 @@ impl Kind {
     }
 }
 
-/// The kind of a window whose process GlazeWM names `process_name`.
+const SHELLS: [&str; 3] = ["pwsh", "powershell", "cmd"];
+
+/// The kind of a window whose process GlazeWM names `process_name`, regardless of case, as Windows names files.
 pub fn kind_of(process_name: &str) -> Kind {
-    match process_name {
-        wezterm::PROCESS_NAME => Kind::Wezterm,
-        windows_terminal::PROCESS_NAME => Kind::WindowsTerminal,
-        "pwsh" | "powershell" | "cmd" => Kind::Shell,
-        _ => Kind::Program,
+    let is = |name: &str| process_name.eq_ignore_ascii_case(name);
+    if is(wezterm::PROCESS_NAME) {
+        Kind::Wezterm
+    } else if is(windows_terminal::PROCESS_NAME) {
+        Kind::WindowsTerminal
+    } else if SHELLS.into_iter().any(is) {
+        Kind::Shell
+    } else {
+        Kind::Program
     }
 }
 
@@ -68,7 +74,14 @@ pub fn key(window: &SavedWindow) -> Result<Key, SkipReason> {
         (Kind::Program, AppState::Program) => Ok(Key::Program {
             executable_path: executable_path.clone(),
         }),
-        _ => Err(SkipReason::StateMismatch),
+        // Every variant by name, so a new one fails to compile here instead of being skipped.
+        (
+            Kind::Wezterm | Kind::WindowsTerminal | Kind::Shell | Kind::Program,
+            AppState::Program
+            | AppState::Shell { .. }
+            | AppState::Wezterm { .. }
+            | AppState::WindowsTerminal { .. },
+        ) => Err(SkipReason::StateMismatch),
     }
 }
 
@@ -88,13 +101,13 @@ pub fn launch(window: &SavedWindow, key: &Key) -> Launch {
             cwd,
         } => Launch {
             owner: owner.clone(),
-            program: executable_path.to_string(),
+            program: executable_path.clone(),
             arguments: String::new(),
             start: Start::Console { cwd: cwd.clone() },
         },
         Key::Program { executable_path } => Launch {
             owner: window.owner.clone(),
-            program: executable_path.to_string(),
+            program: executable_path.clone(),
             arguments: window
                 .command_line
                 .as_deref()
@@ -155,6 +168,15 @@ pub fn quoted(folder: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kind_of_ignores_case() {
+        assert_eq!(kind_of("PWSH"), Kind::Shell);
+        assert_eq!(kind_of("Cmd"), Kind::Shell);
+        assert_eq!(kind_of("windowsterminal"), Kind::WindowsTerminal);
+        assert_eq!(kind_of("WezTerm-GUI"), Kind::Wezterm);
+        assert_eq!(kind_of("app"), Kind::Program);
+    }
 
     #[test]
     fn program_name_is_the_file_stem() {

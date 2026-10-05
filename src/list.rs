@@ -2,11 +2,11 @@
 
 use std::path::Path;
 
-use crate::model::{SavedWindow, Session};
+use crate::model::{SavedWindow, Session, UnixMillis};
 
 /// `session`, saved at `path`, as one tab-separated line: its path, its age at `now`, and its window and workspace
 /// counts.
-pub fn summary(path: &Path, session: &Session, now: u64) -> String {
+pub fn summary(path: &Path, session: &Session, now: UnixMillis) -> String {
     format!(
         "{}\t{}\t{} windows on {} workspaces",
         path.display(),
@@ -17,8 +17,8 @@ pub fn summary(path: &Path, session: &Session, now: u64) -> String {
 }
 
 /// How long before `now` a session saved at `saved_at` was written, in its largest whole unit, as `12 min ago`.
-fn age(saved_at: u64, now: u64) -> String {
-    let seconds = now.saturating_sub(saved_at) / 1000;
+fn age(saved_at: UnixMillis, now: UnixMillis) -> String {
+    let seconds = now.since(saved_at).as_secs();
     match seconds {
         0..60 => format!("{seconds} s ago"),
         60..3600 => format!("{} min ago", seconds / 60),
@@ -52,6 +52,7 @@ mod tests {
 
     #[test]
     fn age_uses_the_largest_whole_unit() {
+        let age = |saved_at: u64, now: u64| age(UnixMillis::new(saved_at), UnixMillis::new(now));
         assert_eq!(age(0, 59_999), "59 s ago");
         assert_eq!(age(0, 60_000), "1 min ago");
         assert_eq!(age(0, 3_599_999), "59 min ago");
