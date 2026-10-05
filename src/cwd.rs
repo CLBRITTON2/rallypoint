@@ -35,6 +35,19 @@ struct RemoteString {
     buffer: usize,
 }
 
+/// A type [`read`] may fill from another process's memory.
+///
+/// # Safety
+///
+/// Every bit pattern of `size_of::<Self>()` bytes must be a valid `Self`: no references, enums, bools or niches.
+unsafe trait PlainData: Default {}
+
+// SAFETY: any bytes are a valid usize.
+unsafe impl PlainData for usize {}
+
+// SAFETY: two u16 and a usize, each valid for any bytes, and padding holds no value.
+unsafe impl PlainData for RemoteString {}
+
 /// The working directory of process `pid`, or None when this account may not read it: an elevated process, or one
 /// of another account.
 pub fn of_process(pid: u32) -> Result<Option<PathBuf>, Error> {
@@ -86,10 +99,11 @@ pub fn of_process(pid: u32) -> Result<Option<PathBuf>, Error> {
     Ok(Some(folder(&wide)))
 }
 
-/// Reads a `T` at `address` in `process`. `T` must be plain data, valid for any bytes.
-fn read<T: Default>(process: HANDLE, pid: u32, address: usize) -> Result<T, Error> {
+/// Reads a `T` at `address` in `process`.
+fn read<T: PlainData>(process: HANDLE, pid: u32, address: usize) -> Result<T, Error> {
     let mut value = T::default();
-    // SAFETY: `value` is a live local of `size_of::<T>()` bytes, which bounds the write.
+    // SAFETY: `value` is a live local of `size_of::<T>()` bytes, which bounds the write, and `PlainData` makes any
+    // bytes written a valid `T`.
     unsafe {
         ReadProcessMemory(
             process,
