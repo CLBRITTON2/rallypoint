@@ -139,7 +139,7 @@ fn tabs(app: &AppState) -> &[Tab] {
 
 /// A command line without its leading program, quoted or not. An unquoted program is `executable_path` when the
 /// command line starts with it, since that path can hold spaces, and otherwise ends at the first space.
-fn arguments_of<'a>(command_line: &'a str, executable_path: &ExePath) -> &'a str {
+pub fn arguments_of<'a>(command_line: &'a str, executable_path: &ExePath) -> &'a str {
     let command_line = command_line.trim_start();
     let rest = match command_line.strip_prefix('"') {
         Some(quoted) => quoted.split_once('"').map_or("", |(_, rest)| rest),

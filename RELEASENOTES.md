@@ -17,6 +17,7 @@ release go under `## [Unreleased]`, renamed to the version when it is tagged.
   console's folder is the one it started in, since `cd` does not change it. The README has an optional prompt line
   that makes it the folder of the last `cd`.
 - Windows Terminal windows reopen through `wt.exe` with their saved tabs, each shell tab in its folder.
+- `rallypoint status` prints whether `rallypoint watch` is running and the newest session, and exits 1 when it is not.
 
 ## [0.1.0] - 2026-10-02
 

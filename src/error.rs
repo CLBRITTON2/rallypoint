@@ -53,6 +53,10 @@ pub enum Error {
     Owner { pid: u32, code: u32 },
     #[error("GetOwner of process {pid} succeeded but named no user")]
     OwnerUnnamed { pid: u32 },
+    #[error(
+        "WMI withholds the executable path or command line of rallypoint process {pid}, so its command is unknown"
+    )]
+    CommandLineHidden { pid: u32 },
     #[error("the environment variable {name} is not set")]
     Env { name: &'static str },
     #[error("running {program} failed: {source}")]

@@ -28,6 +28,8 @@ rallypoint restore
 rallypoint restore $env:LOCALAPPDATA\rallypoint\sessions\1790965947095.json
 # keep the saved session current until GlazeWM exits
 rallypoint watch
+# print whether watch is running and the newest session, exit 1 when watch is not running
+rallypoint status
 ```
 
 The usual setup is to run `restore` then `watch` from GlazeWM's `startup_commands`, in one hidden shell, so `watch`

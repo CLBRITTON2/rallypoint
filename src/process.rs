@@ -17,7 +17,7 @@ pub struct Process {
     pub owner: Owner,
 }
 
-/// A process found by pid, without its owner.
+/// A process found by pid or name, without its owner.
 pub struct Started {
     pub pid: u32,
     /// None for a protected process.
@@ -103,9 +103,18 @@ impl Processes {
             .iter()
             .map(|pid| format!("ProcessId = {pid}"))
             .collect();
+        self.started_where(&filter.join(" OR "))
+    }
+
+    /// The running processes of executable file `name`, as `app.exe`, under any account, oldest first.
+    pub fn named(&self, name: &'static str) -> Result<Vec<Started>, Error> {
+        self.started_where(&format!("Name = '{name}'"))
+    }
+
+    /// The running processes that WQL `condition` selects, oldest first.
+    fn started_where(&self, condition: &str) -> Result<Vec<Started>, Error> {
         let query = format!(
-            "SELECT ProcessId, ExecutablePath, CommandLine, CreationDate FROM Win32_Process WHERE {}",
-            filter.join(" OR ")
+            "SELECT ProcessId, ExecutablePath, CommandLine, CreationDate FROM Win32_Process WHERE {condition}"
         );
         let mut found: Vec<Win32Started> =
             self.wmi.raw_query(&query).map_err(|source| Error::Wmi {

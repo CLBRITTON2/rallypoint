@@ -1,18 +1,20 @@
 //! `rallypoint save` writes the current GlazeWM session to `%LOCALAPPDATA%\rallypoint\sessions\<unix ms>.json` and
 //! prints the path. `rallypoint list` prints every saved session, newest first. `rallypoint restore` brings the newest
 //! session back, or `rallypoint restore <path>` the one at that path, and prints one line per saved window.
-//! `rallypoint watch` saves after window events until GlazeWM exits, printing each path written. Exits 1 when a
-//! window was not restored, the saved workspaces could not be shown again, or `list` met a session it cannot read,
-//! and 2 on any other error or a usage error.
+//! `rallypoint watch` saves after window events until GlazeWM exits, printing each path written. `rallypoint status`
+//! prints whether a watch is running, under any account, and the newest session. Exits 1 when a window was not
+//! restored, the saved workspaces could not be shown again, `list` met a session it cannot read, or `status` found no
+//! watch running, and 2 on any other error or a usage error.
 
 use std::path::Path;
 use std::process::ExitCode;
 
 use rallypoint::error::Error;
 use rallypoint::model::Session;
-use rallypoint::{capture, list, restore, store, watch};
+use rallypoint::{capture, list, restore, status, store, watch};
 
-const USAGE: &str = "usage: rallypoint save | rallypoint list | rallypoint restore [<session path>] | rallypoint watch";
+const USAGE: &str = "usage: rallypoint save | rallypoint list | rallypoint restore [<session path>] | rallypoint watch \
+                     | rallypoint status";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -24,6 +26,7 @@ fn main() -> ExitCode {
             .and_then(restore),
         [command, path] if command == "restore" => store::read(Path::new(path)).and_then(restore),
         [command] if command == "watch" => watch(),
+        [command] if command == "status" => status(),
         _ => {
             eprintln!("{USAGE}, got {args:?}");
             return ExitCode::from(2);
@@ -68,6 +71,27 @@ fn list() -> Result<ExitCode, Error> {
 fn watch() -> Result<ExitCode, Error> {
     watch::watch(&store::sessions_folder()?)?;
     Ok(ExitCode::SUCCESS)
+}
+
+fn status() -> Result<ExitCode, Error> {
+    let watchers = status::watchers()?;
+    let pids: Vec<String> = watchers.iter().map(u32::to_string).collect();
+    match pids.as_slice() {
+        [] => println!("watch: not running"),
+        [pid] => println!("watch: running, pid {pid}"),
+        _ => println!("watch: running, pids {}", pids.join(" ")),
+    }
+    match store::newest_first(&store::sessions_folder()?)?.first() {
+        Some(path) => println!(
+            "newest: {}",
+            list::summary(path, &store::read(path)?, store::now()?)
+        ),
+        None => println!("newest: no session saved"),
+    }
+    match watchers.is_empty() {
+        true => Ok(ExitCode::from(1)),
+        false => Ok(ExitCode::SUCCESS),
+    }
 }
 
 fn restore(saved: Session) -> Result<ExitCode, Error> {

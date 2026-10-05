@@ -14,6 +14,7 @@ pub mod model;
 mod plan;
 mod process;
 pub mod restore;
+pub mod status;
 pub mod store;
 mod uncloak;
 pub mod watch;
