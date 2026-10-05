@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use rallypoint::model::VERSION;
+use windows::Win32::Foundation::ERROR_ACCESS_DENIED;
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::core::w;
 
@@ -62,7 +63,13 @@ fn no_command_prints_the_help_as_a_usage_error() -> TestResult {
 #[test]
 fn watch_refuses_to_start_while_another_holds_the_lock() -> TestResult {
     // SAFETY: no security attributes, and the name is a static string. The handle closes when the test exits.
-    unsafe { CreateMutexW(None, false, w!("Global\\rallypoint-watch")) }?;
+    let created = unsafe { CreateMutexW(None, false, w!("Global\\rallypoint-watch")) };
+    // Denied while another account's watch holds the lock, which holds it for this test just as well.
+    if let Err(error) = created
+        && error.code() != ERROR_ACCESS_DENIED.to_hresult()
+    {
+        return Err(error.into());
+    }
     let local_app_data = tempfile::tempdir()?;
     let output = run(local_app_data.path(), &["watch"])?;
     assert_eq!(output.status.code(), Some(2));

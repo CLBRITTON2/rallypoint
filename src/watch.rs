@@ -4,6 +4,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -66,13 +68,17 @@ pub fn watch(folder: &Path) -> Result<(), Error> {
         .subscribe(&EVENTS)?
         .forward(sender.clone(), signal_of);
     let (opened, window) = mpsc::channel::<Result<isize, Error>>();
-    thread::spawn(move || listen(sender, opened));
+    let shown = Arc::new(AtomicBool::new(false));
+    let icon_shown = Arc::clone(&shown);
+    thread::spawn(move || listen(sender, opened, icon_shown));
     let window = window
         .recv()
         .map_err(|_| Error::ThreadGone { thread: "window" })??;
     let stopped = save_until_stopped(folder, &signals);
     // Otherwise the icon stays in the notification area until the pointer passes over it.
-    if let Err(error) = tray::remove(HWND(window as _)) {
+    if shown.load(Ordering::Relaxed)
+        && let Err(error) = tray::remove(HWND(window as _))
+    {
         eprintln!("rallypoint: removing the tray icon failed: {error}");
     }
     stopped
@@ -159,13 +165,16 @@ thread_local! {
     static SIGNALS: RefCell<Option<Sender<Signal>>> = const { RefCell::new(None) };
     /// The message id Explorer broadcasts when it starts a new taskbar.
     static TASKBAR_CREATED: Cell<Option<u32>> = const { Cell::new(None) };
+    /// Whether the tray icon is up, which `watch` reads to remove it only then.
+    static ICON_SHOWN: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
 }
 
 /// Runs a hidden top-level window with the tray icon on it, since a message-only window never receives
 /// `WM_QUERYENDSESSION` or `TaskbarCreated`. Sends the window on `opened` once it is up, or why it is not.
-fn listen(signals: Sender<Signal>, opened: Sender<Result<isize, Error>>) {
+fn listen(signals: Sender<Signal>, opened: Sender<Result<isize, Error>>, shown: Arc<AtomicBool>) {
     let failed = signals.clone();
     SIGNALS.with_borrow_mut(|slot| *slot = Some(signals));
+    ICON_SHOWN.with_borrow_mut(|slot| *slot = Some(shown));
     let window = match open_window() {
         Ok(window) => window,
         Err(error) => {
@@ -266,9 +275,15 @@ fn pump_messages() -> Result<(), Error> {
 
 /// Adds the tray icon, warning rather than stopping `watch`, which saves just as well without it.
 fn show_icon(window: HWND) {
-    if let Err(error) = tray::add(window) {
+    let added = tray::add(window);
+    if let Err(error) = &added {
         eprintln!("rallypoint: showing the tray icon failed: {error}");
     }
+    ICON_SHOWN.with_borrow(|shown| {
+        if let Some(shown) = shown {
+            shown.store(added.is_ok(), Ordering::Relaxed);
+        }
+    });
 }
 
 /// What the tray menu's pick asks of the main loop, warning when the menu fails.
