@@ -63,6 +63,9 @@ impl Sources {
                     Kind::Shell => AppState::Shell {
                         cwd: cwd::of_process(process.pid)?,
                     },
+                    Kind::FrameHost => AppState::Packaged {
+                        aumid: packaged::aumid_of_window(window.handle)?,
+                    },
                     Kind::Program
                         if process
                             .executable_path

@@ -16,6 +16,7 @@ use windows::Win32::System::Com::{
 use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, IsWindowVisible};
 use windows::core::{BOOL, GUID, HRESULT, IUnknown, IUnknown_Vtbl, Interface, interface};
 
+use crate::apps::{self, Kind};
 use crate::capture::Sources;
 use crate::error::Error;
 use crate::model::{ExePath, SavedWindow};
@@ -125,6 +126,8 @@ fn to_uncloak<'a>(
         .filter(|window| {
             saved
                 .iter()
+                // Every UWP window shares the frame host's executable, and the shell keeps suspended UWP frames cloaked.
+                .filter(|saved| apps::kind_of(&saved.process_name) != Kind::FrameHost)
                 .any(|saved| saved.executable_path.as_ref() == Some(&window.executable_path))
         })
         .collect()
@@ -248,6 +251,13 @@ mod tests {
         assert_eq!(panic_message(literal.as_ref()), "literal");
         assert_eq!(panic_message(formatted.as_ref()), "formatted");
         assert_eq!(panic_message(other.as_ref()), "a payload that is not text");
+    }
+
+    #[test]
+    fn to_uncloak_never_takes_a_uwp_frame() {
+        const FRAME_HOST: &str = r"C:\Windows\System32\ApplicationFrameHost.exe";
+        let saved = fixtures::window("ApplicationFrameHost", Some(FRAME_HOST));
+        assert!(to_uncloak(&[hidden(1, FRAME_HOST)], &[], &[saved]).is_empty());
     }
 
     #[test]

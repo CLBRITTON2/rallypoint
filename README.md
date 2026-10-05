@@ -63,7 +63,8 @@ Exit codes: 0 done, 1 when `restore` could not bring back every window, 2 error.
 For each window GlazeWM manages: its workspace and state, and the program behind it (executable path, command line
 and owning account). Each session also records the workspace shown on each monitor and the one with focus. For a
 [wezterm](https://wezterm.org) window it also saves its tabs in order and, for each pane, its working directory, Claude
-Code session, place in its tab and whether its tab focuses it. For a Store app it saves its AUMID. For a console shell (pwsh,
+Code session, place in its tab and whether its tab focuses it. For a Store app it saves its AUMID, read from the
+window for a UWP app such as Calculator, whose window belongs to `ApplicationFrameHost.exe`. For a console shell (pwsh,
 Windows PowerShell or cmd) it saves the shell's folder. For a Windows Terminal window it saves each tab's program and, for a
 shell tab, its folder. PowerShell's `cd` changes only PowerShell's own location, not its process's folder, so a
 PowerShell console or tab reopens in the folder it started in. To have it reopen where you last `cd`'d, add this
@@ -105,7 +106,6 @@ as that account.
 
 - Split layouts are not rebuilt. Windows come back on the right workspace in saved order, but GlazeWM's IPC cannot
   build a split tree.
-- A UWP app whose window belongs to `ApplicationFrameHost.exe` (Calculator, for one) is not launched again.
 - Windows Terminal split panes come back as tabs, tabs come back in the order they were opened rather than a dragged
   order, and the first tab is the active one.
 - Elevated windows relaunch unelevated. The folder of an elevated shell, or of another account's, cannot be read, so

@@ -10,6 +10,8 @@ release go under `## [Unreleased]`, renamed to the version when it is tagged.
   tab's focused pane focused.
 - Store apps with their own executable (Notepad, for one) are saved by their AUMID and launched again through
   `shell:AppsFolder`, instead of being skipped.
+- UWP apps, whose window belongs to `ApplicationFrameHost.exe` (Calculator, for one), are saved by the AUMID their
+  window names and launched again the same way.
 - Sessions move to format version 4, so the first `save` after upgrading is the oldest one that restores.
 
 ## [0.2.0] - 2026-10-05

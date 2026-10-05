@@ -452,6 +452,42 @@ mod tests {
     }
 
     #[test]
+    fn launches_start_each_uwp_app_by_its_aumid_not_the_frame_host() {
+        let uwp = |aumid: &str| SavedWindow {
+            app: AppState::Packaged {
+                aumid: aumid.to_string(),
+            },
+            ..fixtures::window(
+                "ApplicationFrameHost",
+                Some(r"C:\Windows\System32\ApplicationFrameHost.exe"),
+            )
+        };
+        let planned: Vec<(String, Vec<usize>)> = launches(
+            &[
+                uwp("Example.One_0123456789abc!App"),
+                uwp("Example.Two_0123456789abc!App"),
+            ],
+            &[None, None],
+        )
+        .into_iter()
+        .map(|(launch, windows)| (launch.command_line(), windows))
+        .collect();
+        assert_eq!(
+            planned,
+            vec![
+                (
+                    r#""explorer.exe" shell:AppsFolder\Example.One_0123456789abc!App"#.to_string(),
+                    vec![0]
+                ),
+                (
+                    r#""explorer.exe" shell:AppsFolder\Example.Two_0123456789abc!App"#.to_string(),
+                    vec![1]
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn assign_gives_exact_keys_their_window_before_wildcards() {
         let saved = vec![shell(None), shell(Some(r"C:\work\project"))];
         let open = vec![live(shell(Some(r"C:\work\project")))];

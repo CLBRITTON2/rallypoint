@@ -53,6 +53,14 @@ pub enum Error {
         #[source]
         source: std::string::FromUtf16Error,
     },
+    #[error("the AUMID of UWP window handle {handle} is not valid UTF-16: {source}")]
+    WindowAumid {
+        handle: isize,
+        #[source]
+        source: std::string::FromUtf16Error,
+    },
+    #[error("UWP window handle {handle} names no AUMID, so the app it shows is unknown")]
+    NoAumid { handle: isize },
     #[error("the name of the account rallypoint runs as is not valid UTF-16: {0}")]
     AccountName(#[source] std::string::FromUtf16Error),
     #[error("GetOwner of process {pid} returned {code}")]

@@ -19,6 +19,8 @@ pub enum Kind {
     WindowsTerminal,
     /// A console shell, which restore reopens in its saved folder.
     Shell,
+    /// A UWP app's window, which the frame host process draws for it.
+    FrameHost,
     Program,
 }
 
@@ -35,7 +37,7 @@ impl Kind {
     pub fn launch_scope(self) -> LaunchScope {
         match self {
             Kind::Wezterm | Kind::WindowsTerminal | Kind::Shell => LaunchScope::PerWindow,
-            Kind::Program => LaunchScope::PerProgram,
+            Kind::FrameHost | Kind::Program => LaunchScope::PerProgram,
         }
     }
 }
@@ -51,6 +53,8 @@ pub fn kind_of(process_name: &str) -> Kind {
         Kind::WindowsTerminal
     } else if SHELLS.into_iter().any(is) {
         Kind::Shell
+    } else if is(packaged::FRAME_HOST) {
+        Kind::FrameHost
     } else {
         Kind::Program
     }
@@ -78,10 +82,12 @@ pub fn key(window: &SavedWindow) -> Result<Key, SkipReason> {
             executable_path: executable_path.clone(),
             owner: window.owner.clone(),
         }),
-        (Kind::Program, AppState::Packaged { aumid }) => Ok(packaged::key(&window.owner, aumid)),
+        (Kind::FrameHost | Kind::Program, AppState::Packaged { aumid }) => {
+            Ok(packaged::key(&window.owner, aumid))
+        }
         // Every variant by name, so a new one fails to compile here instead of being skipped.
         (
-            Kind::Wezterm | Kind::WindowsTerminal | Kind::Shell | Kind::Program,
+            Kind::Wezterm | Kind::WindowsTerminal | Kind::Shell | Kind::FrameHost | Kind::Program,
             AppState::Program
             | AppState::Packaged { .. }
             | AppState::Shell { .. }
@@ -205,6 +211,7 @@ mod tests {
         assert_eq!(kind_of("Cmd"), Kind::Shell);
         assert_eq!(kind_of("windowsterminal"), Kind::WindowsTerminal);
         assert_eq!(kind_of("WezTerm-GUI"), Kind::Wezterm);
+        assert_eq!(kind_of("applicationframehost"), Kind::FrameHost);
         assert_eq!(kind_of("app"), Kind::Program);
     }
 
