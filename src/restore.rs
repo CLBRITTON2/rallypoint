@@ -14,7 +14,7 @@ use crate::error::Error;
 use crate::glazewm::{Client, Event};
 use crate::launch::{keep_output_from_launches, spawn};
 use crate::model::{Focus, SavedWindow, Session, WindowState};
-use crate::plan::{SkipReason, assign, launch_key, launches};
+use crate::plan::{SkipReason, assign, launches};
 use crate::uncloak;
 
 /// How long launched windows get to appear. A window started through `runas` takes a few seconds.
@@ -29,8 +29,7 @@ const SETTLE_LIMIT: Duration = Duration::from_secs(60);
 pub enum Outcome {
     AlreadyOpen,
     Launched,
-    /// Open after the launches, though rallypoint launched nothing for it: a packaged app or a program another
-    /// program started.
+    /// Open after the launches, though rallypoint launched nothing for it: a program another program started.
     Appeared,
     Skipped(SkipReason),
     /// Shared, since one launch can bring back several windows.
@@ -167,7 +166,7 @@ fn outcome(window: &SavedWindow, steps: Steps) -> Outcome {
             ..
         } => Outcome::Launched,
         Steps { is_open: true, .. } => Outcome::Appeared,
-        Steps { launch_failure, .. } => match (launch_key(window), launch_failure) {
+        Steps { launch_failure, .. } => match (apps::key(window), launch_failure) {
             (Err(reason), _) => Outcome::Skipped(reason),
             (Ok(_), Some(error)) => Outcome::LaunchFailed(error),
             (Ok(_), None) => Outcome::NotSeen,
@@ -308,10 +307,6 @@ mod tests {
     fn outcome_reports_a_window_by_what_happened_to_it() {
         let app = fixtures::window("app", Some(r"C:\tools\app.exe"));
         let protected = fixtures::window("protected", None);
-        let packaged = fixtures::window(
-            "packaged",
-            Some(r"C:\Program Files\WindowsApps\Example_1\app.exe"),
-        );
         let open = || Steps {
             was_open: true,
             is_open: true,
@@ -370,7 +365,7 @@ mod tests {
         ));
         assert!(matches!(
             outcome(
-                &packaged,
+                &app,
                 Steps {
                     is_open: true,
                     ..Steps::default()

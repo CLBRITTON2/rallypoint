@@ -9,6 +9,7 @@ use crate::model::{AppState, ExePath, SavedWindow, Tab, WeztermTab};
 use crate::plan::{Key, Launch, SkipReason, Start};
 
 pub mod claude_code;
+pub mod packaged;
 pub mod wezterm;
 pub mod windows_terminal;
 
@@ -77,10 +78,12 @@ pub fn key(window: &SavedWindow) -> Result<Key, SkipReason> {
             executable_path: executable_path.clone(),
             owner: window.owner.clone(),
         }),
+        (Kind::Program, AppState::Packaged { aumid }) => Ok(packaged::key(&window.owner, aumid)),
         // Every variant by name, so a new one fails to compile here instead of being skipped.
         (
             Kind::Wezterm | Kind::WindowsTerminal | Kind::Shell | Kind::Program,
             AppState::Program
+            | AppState::Packaged { .. }
             | AppState::Shell { .. }
             | AppState::Wezterm { .. }
             | AppState::WindowsTerminal { .. },
@@ -97,6 +100,7 @@ pub fn launch(window: &SavedWindow, key: &Key) -> Launch {
             cwd,
         } => wezterm::launch(executable_path, owner, cwd, wezterm_tabs(&window.app)),
         Key::WindowsTerminal { owner, .. } => windows_terminal::launch(owner, tabs(&window.app)),
+        Key::Packaged { owner, aumid } => packaged::launch(owner, aumid),
         // Without the saved arguments, so a window opened to run one command (a -Command) does not run it again.
         Key::Shell {
             executable_path,
@@ -132,21 +136,30 @@ pub fn rebuild(window: &SavedWindow, pid: u32) -> Result<(), Error> {
         AppState::Wezterm { tabs } => {
             wezterm::rebuild(&account::home_of(&window.owner)?, pid, tabs)
         }
-        AppState::WindowsTerminal { .. } | AppState::Shell { .. } | AppState::Program => Ok(()),
+        AppState::WindowsTerminal { .. }
+        | AppState::Shell { .. }
+        | AppState::Program
+        | AppState::Packaged { .. } => Ok(()),
     }
 }
 
 fn wezterm_tabs(app: &AppState) -> &[WeztermTab] {
     match app {
         AppState::Wezterm { tabs } => tabs,
-        AppState::WindowsTerminal { .. } | AppState::Shell { .. } | AppState::Program => &[],
+        AppState::WindowsTerminal { .. }
+        | AppState::Shell { .. }
+        | AppState::Program
+        | AppState::Packaged { .. } => &[],
     }
 }
 
 fn tabs(app: &AppState) -> &[Tab] {
     match app {
         AppState::WindowsTerminal { tabs } => tabs,
-        AppState::Wezterm { .. } | AppState::Shell { .. } | AppState::Program => &[],
+        AppState::Wezterm { .. }
+        | AppState::Shell { .. }
+        | AppState::Program
+        | AppState::Packaged { .. } => &[],
     }
 }
 

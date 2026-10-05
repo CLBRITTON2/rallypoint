@@ -2,11 +2,11 @@
 //! what reopening its windows needs.
 
 use crate::account;
-use crate::apps::{self, Kind, wezterm, windows_terminal};
+use crate::apps::{self, Kind, packaged, wezterm, windows_terminal};
 use crate::cwd;
 use crate::error::Error;
 use crate::glazewm::{Client, Window, Workspace};
-use crate::model::{AppState, Focus, SavedWindow, Session, VERSION};
+use crate::model::{AppState, ExePath, Focus, SavedWindow, Session, VERSION};
 use crate::process::{Process, Processes};
 use crate::store;
 
@@ -63,6 +63,16 @@ impl Sources {
                     Kind::Shell => AppState::Shell {
                         cwd: cwd::of_process(process.pid)?,
                     },
+                    Kind::Program
+                        if process
+                            .executable_path
+                            .as_ref()
+                            .is_some_and(ExePath::is_packaged) =>
+                    {
+                        AppState::Packaged {
+                            aumid: packaged::aumid_of(process.pid)?,
+                        }
+                    }
                     Kind::Program => AppState::Program,
                 };
                 windows.push(LiveWindow {

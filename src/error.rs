@@ -47,6 +47,12 @@ pub enum Error {
         #[source]
         source: windows::core::Error,
     },
+    #[error("the AUMID of process {pid} is not valid UTF-16: {source}")]
+    Aumid {
+        pid: u32,
+        #[source]
+        source: std::string::FromUtf16Error,
+    },
     #[error("the name of the account rallypoint runs as is not valid UTF-16: {0}")]
     AccountName(#[source] std::string::FromUtf16Error),
     #[error("GetOwner of process {pid} returned {code}")]

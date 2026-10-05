@@ -10,7 +10,7 @@ use crate::glazewm::State;
 
 /// The session format `capture` writes and `store::read` accepts. Bump it on any change an older rallypoint could
 /// misread, since a session of another version is refused rather than migrated.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 #[derive(Serialize, Deserialize)]
 pub struct Session {
@@ -171,6 +171,10 @@ impl From<WindowState> for State {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AppState {
     Program,
+    /// A Store app, which starts by its AUMID instead of its executable.
+    Packaged {
+        aumid: String,
+    },
     /// A console shell. None is a folder save could not read.
     Shell {
         cwd: Option<PathBuf>,

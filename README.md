@@ -63,7 +63,7 @@ Exit codes: 0 done, 1 when `restore` could not bring back every window, 2 error.
 For each window GlazeWM manages: its workspace and state, and the program behind it (executable path, command line
 and owning account). Each session also records the workspace shown on each monitor and the one with focus. For a
 [wezterm](https://wezterm.org) window it also saves its tabs in order and, for each pane, its working directory, Claude
-Code session, place in its tab and whether its tab focuses it. For a console shell (pwsh,
+Code session, place in its tab and whether its tab focuses it. For a Store app it saves its AUMID. For a console shell (pwsh,
 Windows PowerShell or cmd) it saves the shell's folder. For a Windows Terminal window it saves each tab's program and, for a
 shell tab, its folder. PowerShell's `cd` changes only PowerShell's own location, not its process's folder, so a
 PowerShell console or tab reopens in the folder it started in. To have it reopen where you last `cd`'d, add this
@@ -90,7 +90,8 @@ stops saving while Windows shuts down, so the apps closing one by one never over
    matched by its folder and reopened there in a console of its own, one per window, without its saved arguments, so
    a window opened to run one command does not run it again. A Windows Terminal window is matched by its tabs and
    reopened with `wt.exe -w new`, one tab per saved tab in the order they were opened, each shell tab in its folder
-   and without its saved arguments.
+   and without its saved arguments. A Store app is matched by its AUMID and launched once through
+   `explorer.exe shell:AppsFolder\<AUMID>`, since its own executable cannot be started.
 4. Each window is moved to its saved workspace and state. Windows that are already right are left alone.
 5. The workspace each monitor showed is shown again, and the one that had focus gets it back.
 
@@ -104,8 +105,7 @@ as that account.
 
 - Split layouts are not rebuilt. Windows come back on the right workspace in saved order, but GlazeWM's IPC cannot
   build a split tree.
-- Store apps other than Windows Terminal are matched when open but never launched, since their executables cannot be
-  started directly.
+- A UWP app whose window belongs to `ApplicationFrameHost.exe` (Calculator, for one) is not launched again.
 - Windows Terminal split panes come back as tabs, tabs come back in the order they were opened rather than a dragged
   order, and the first tab is the active one.
 - Elevated windows relaunch unelevated. The folder of an elevated shell, or of another account's, cannot be read, so

@@ -25,6 +25,8 @@ pub enum Key {
     /// A Windows Terminal window, by who runs it and its tabs. No tabs is a window save found no tab shells in,
     /// matching any.
     WindowsTerminal { owner: Owner, tabs: Vec<TabKey> },
+    /// A Store app window, by who runs it and its AUMID. Its windows are told apart only by order.
+    Packaged { owner: Owner, aumid: String },
     /// Any other window, by who runs it and its program. Its windows are told apart only by order.
     Program {
         executable_path: ExePath,
@@ -38,7 +40,6 @@ pub enum SkipReason {
     Protected,
     NoPanes,
     StateMismatch,
-    Packaged,
 }
 
 impl fmt::Display for SkipReason {
@@ -47,7 +48,6 @@ impl fmt::Display for SkipReason {
             SkipReason::Protected => "no executable path, a protected process",
             SkipReason::NoPanes => "terminal window without panes",
             SkipReason::StateMismatch => "saved app state does not match its program",
-            SkipReason::Packaged => "packaged app, its executable cannot be launched directly",
         })
     }
 }
@@ -108,17 +108,6 @@ impl Launch {
         format!("\"{}\" {}", self.program, self.arguments)
             .trim_end()
             .to_string()
-    }
-}
-
-/// The key of a window restore can launch, or why it cannot. A packaged app is matched when open but never launched.
-pub fn launch_key(window: &SavedWindow) -> Result<Key, SkipReason> {
-    let key = apps::key(window)?;
-    match &key {
-        Key::Program {
-            executable_path, ..
-        } if executable_path.is_packaged() => Err(SkipReason::Packaged),
-        _ => Ok(key),
     }
 }
 
@@ -183,7 +172,7 @@ pub fn launches(saved: &[SavedWindow], open: &[Option<usize>]) -> Vec<(Launch, V
         if open.get(index).is_some_and(Option::is_some) {
             continue;
         }
-        let Ok(key) = launch_key(window) else {
+        let Ok(key) = apps::key(window) else {
             continue;
         };
         let per_program =
@@ -263,6 +252,15 @@ mod tests {
             program: Some(ExePath::new(path.to_string())),
             command_line: Some(command_line.to_string()),
             cwd: cwd.map(PathBuf::from),
+        }
+    }
+
+    fn packaged() -> SavedWindow {
+        SavedWindow {
+            app: AppState::Packaged {
+                aumid: "Example.App_0123456789abc!App".to_string(),
+            },
+            ..fixtures::window("app", Some(PACKAGED))
         }
     }
 
@@ -425,19 +423,32 @@ mod tests {
     }
 
     #[test]
-    fn launch_key_skips_what_cannot_be_launched() {
+    fn key_skips_what_cannot_be_launched() {
         let protected = SavedWindow {
             executable_path: None,
             ..program("", "")
         };
-        assert!(matches!(launch_key(&protected), Err(SkipReason::Protected)));
-        let packaged = program(PACKAGED, "");
-        assert!(matches!(launch_key(&packaged), Err(SkipReason::Packaged)));
+        assert!(matches!(apps::key(&protected), Err(SkipReason::Protected)));
         let paneless = SavedWindow {
             app: AppState::Wezterm { tabs: Vec::new() },
             ..terminal(r"C:\a", None)
         };
-        assert!(matches!(launch_key(&paneless), Err(SkipReason::NoPanes)));
+        assert!(matches!(apps::key(&paneless), Err(SkipReason::NoPanes)));
+    }
+
+    #[test]
+    fn launches_start_a_packaged_app_once_by_its_aumid() {
+        let planned: Vec<(String, Vec<usize>)> = launches(&[packaged(), packaged()], &[None, None])
+            .into_iter()
+            .map(|(launch, windows)| (launch.command_line(), windows))
+            .collect();
+        assert_eq!(
+            planned,
+            vec![(
+                r#""explorer.exe" shell:AppsFolder\Example.App_0123456789abc!App"#.to_string(),
+                vec![0, 1]
+            )]
+        );
     }
 
     #[test]
@@ -456,8 +467,8 @@ mod tests {
 
     #[test]
     fn assign_matches_an_open_packaged_app() {
-        let saved = vec![program(PACKAGED, "")];
-        let open = vec![live(program(PACKAGED, ""))];
+        let saved = vec![packaged()];
+        let open = vec![live(packaged())];
         assert_eq!(assign(&saved, &open), vec![Some(0)]);
     }
 }

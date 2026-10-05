@@ -7,8 +7,10 @@ release go under `## [Unreleased]`, renamed to the version when it is tagged.
 ## [Unreleased]
 
 - wezterm windows come back with every tab and split, each pane in its folder and Claude Code session, and each
-  tab's focused pane focused. Sessions move to format version 3, so the first `save` after upgrading is the oldest
-  one that restores.
+  tab's focused pane focused.
+- Store apps with their own executable (Notepad, for one) are saved by their AUMID and launched again through
+  `shell:AppsFolder`, instead of being skipped.
+- Sessions move to format version 4, so the first `save` after upgrading is the oldest one that restores.
 
 ## [0.2.0] - 2026-10-05
 
