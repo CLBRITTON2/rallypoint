@@ -283,7 +283,7 @@ fn launch(window: &SavedWindow, key: &Key) -> Launch {
             arguments: window
                 .command_line
                 .as_deref()
-                .map(arguments_of)
+                .map(|command_line| arguments_of(command_line, executable_path))
                 .unwrap_or_default()
                 .to_string(),
             start: Start::Detached,
@@ -291,12 +291,16 @@ fn launch(window: &SavedWindow, key: &Key) -> Launch {
     }
 }
 
-/// A command line without its leading program, quoted or not.
-fn arguments_of(command_line: &str) -> &str {
+/// A command line without its leading program, quoted or not. An unquoted program is `executable_path` when the
+/// command line starts with it, since that path can hold spaces, and otherwise ends at the first space.
+fn arguments_of<'a>(command_line: &'a str, executable_path: &ExePath) -> &'a str {
     let command_line = command_line.trim_start();
     let rest = match command_line.strip_prefix('"') {
         Some(quoted) => quoted.split_once('"').map_or("", |(_, rest)| rest),
-        None => command_line.split_once(' ').map_or("", |(_, rest)| rest),
+        None => match executable_path.strip_from(command_line) {
+            Some(rest) if rest.is_empty() || rest.starts_with(' ') => rest,
+            _ => command_line.split_once(' ').map_or("", |(_, rest)| rest),
+        },
     };
     rest.trim()
 }
@@ -451,13 +455,25 @@ mod tests {
 
     #[test]
     fn arguments_of_drops_a_quoted_or_bare_program() {
+        let path = ExePath::new(r"C:\tools\x.exe".to_string());
         assert_eq!(
-            arguments_of(r#""C:\Program Files\x.exe" -a "b c""#),
+            arguments_of(r#""C:\tools\x.exe" -a "b c""#, &path),
             r#"-a "b c""#
         );
-        assert_eq!(arguments_of(r"x.exe -a"), "-a");
-        assert_eq!(arguments_of(r#""C:\x.exe" "#), "");
-        assert_eq!(arguments_of("x.exe"), "");
+        assert_eq!(arguments_of(r"x.exe -a", &path), "-a");
+        assert_eq!(arguments_of(r#""C:\tools\x.exe" "#, &path), "");
+        assert_eq!(arguments_of("x.exe", &path), "");
+    }
+
+    #[test]
+    fn arguments_of_keeps_an_unquoted_program_path_with_spaces_whole() {
+        let path = ExePath::new(r"C:\Program Files\x\app.exe".to_string());
+        assert_eq!(arguments_of(r"c:\program files\x\app.exe -a", &path), "-a");
+        assert_eq!(arguments_of(r"C:\Program Files\x\app.exe", &path), "");
+        assert_eq!(
+            arguments_of(r"C:\Program Files\x\app.exe2 -a", &path),
+            r"Files\x\app.exe2 -a"
+        );
     }
 
     #[test]

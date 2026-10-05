@@ -55,6 +55,14 @@ impl ExePath {
         &self.0
     }
 
+    /// The rest of `text` after this path, when `text` starts with it regardless of case.
+    pub fn strip_from<'a>(&self, text: &'a str) -> Option<&'a str> {
+        let head = text.get(..self.0.len())?;
+        caseless_eq(head, &self.0)
+            .then(|| text.get(self.0.len()..))
+            .flatten()
+    }
+
     /// Whether the executable sits in a packaged app's install folder, which cannot be started directly.
     pub fn is_packaged(&self) -> bool {
         self.0.to_lowercase().contains(r"\windowsapps\")
