@@ -78,7 +78,7 @@ pub fn restore(session: &Session) -> Result<Restored, Error> {
     if uncloak::adopt(&mut sources, saved)? > 0 {
         settle()?;
     }
-    let open = assign(saved, &sources.live_windows()?);
+    let open = assign(saved, &wait(&mut sources, saved, &[])?);
     let mut launch_failures: Vec<(usize, Rc<Error>)> = Vec::new();
     let mut expected: Vec<usize> = Vec::new();
     for (launch, windows) in launches(saved, &open) {
@@ -211,13 +211,16 @@ fn focus_order(focus: &Focus) -> Vec<&str> {
 }
 
 /// Reads the open windows until every window at an index in `expected` has a match, or [`WAIT`] runs out. A read
-/// fails while a just launched wezterm has not opened its socket yet, so a failed read is retried until then.
+/// fails while a just launched wezterm has not opened its socket yet, so a failed read is retried until then. At the
+/// deadline a failed read falls back to the last read that worked, so the windows it found are still placed and
+/// reported, and errors only when no read worked.
 fn wait(
     sources: &mut Sources,
     saved: &[SavedWindow],
     expected: &[usize],
 ) -> Result<Vec<LiveWindow>, Error> {
     let deadline = Instant::now() + WAIT;
+    let mut last_read: Option<Vec<LiveWindow>> = None;
     loop {
         match sources.live_windows() {
             Ok(live) => {
@@ -228,8 +231,19 @@ fn wait(
                 if all_found || Instant::now() >= deadline {
                     return Ok(live);
                 }
+                last_read = Some(live);
             }
-            Err(error) if Instant::now() >= deadline => return Err(error),
+            Err(error) if Instant::now() >= deadline => {
+                return match last_read {
+                    Some(live) => {
+                        eprintln!(
+                            "rallypoint: reading the open windows failed, using the last read: {error}"
+                        );
+                        Ok(live)
+                    }
+                    None => Err(error),
+                };
+            }
             Err(error) => {
                 eprintln!("rallypoint: reading the open windows failed, retrying: {error}")
             }

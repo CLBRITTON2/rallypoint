@@ -70,9 +70,15 @@ pub fn adopt(sources: &mut Sources, saved: &[SavedWindow]) -> Result<usize, Erro
         .collect();
     let mut hidden = Vec::new();
     for handle in shell_cloaked()? {
+        let executable_path = match sources.processes().executable_path_of_window(handle) {
+            Ok(executable_path) => executable_path,
+            // Closed since the enumeration, so there is nothing left to uncloak.
+            Err(Error::NoProcess { .. } | Error::ProcessGone { .. }) => continue,
+            Err(error) => return Err(error),
+        };
         hidden.push(Hidden {
             handle,
-            executable_path: sources.processes().executable_path_of_window(handle)?,
+            executable_path,
         });
     }
     let chosen = to_uncloak(&hidden, &managed, saved);
