@@ -65,12 +65,13 @@ pub fn aumid_of_window(handle: isize) -> Result<String, Error> {
     // SAFETY: `value` is the initialized PROPVARIANT GetValue returned.
     let text = unsafe { PropVariantToStringAlloc(&value) };
     // SAFETY: `value` is initialized and not read after this.
-    unsafe { PropVariantClear(&mut value) }.map_err(os_error("PropVariantClear"))?;
+    let cleared = unsafe { PropVariantClear(&mut value) };
     let text = text.map_err(os_error("PropVariantToStringAlloc"))?;
     // SAFETY: PropVariantToStringAlloc returned a null-terminated string, freed only below.
     let aumid = unsafe { text.to_string() };
     // SAFETY: PropVariantToStringAlloc allocated `text` with CoTaskMemAlloc, and nothing reads it after this.
     unsafe { CoTaskMemFree(Some(text.0 as _)) };
+    cleared.map_err(os_error("PropVariantClear"))?;
     let aumid = aumid.map_err(|source| Error::WindowAumid { handle, source })?;
     if aumid.is_empty() {
         return Err(Error::NoAumid { handle });

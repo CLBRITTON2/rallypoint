@@ -14,7 +14,7 @@ use crate::error::Error;
 use crate::glazewm::{Client, Event};
 use crate::launch::{keep_output_from_launches, spawn};
 use crate::model::{Focus, SavedWindow, Session, WindowState};
-use crate::plan::{SkipReason, assign, launches};
+use crate::plan::{SkipReason, assign, launches, reassign};
 use crate::uncloak;
 
 /// How long launched windows get to appear. A window started through `runas` takes a few seconds.
@@ -38,6 +38,11 @@ pub enum Outcome {
     PlaceFailed(Error),
     /// Launched and placed, but opening its other tabs and panes failed.
     LayoutFailed(Error),
+    /// Launched, but both opening its other tabs and panes and placing it failed.
+    LayoutAndPlaceFailed {
+        layout: Error,
+        place: Error,
+    },
     /// Launched, but no matching window appeared within [`WAIT`].
     NotSeen,
 }
@@ -70,6 +75,10 @@ impl fmt::Display for Outcome {
             Outcome::LayoutFailed(error) => {
                 write!(f, "launched, but rebuilding its panes failed, {error}")
             }
+            Outcome::LayoutAndPlaceFailed { layout, place } => write!(
+                f,
+                "launched, but rebuilding its panes failed, {layout}, and placing it failed, {place}"
+            ),
             Outcome::NotSeen => write!(
                 f,
                 "launched, but no window appeared in {} s",
@@ -90,7 +99,8 @@ pub fn restore(session: &Session) -> Result<Restored, Error> {
     if uncloak::adopt(&mut sources, saved)? > 0 {
         settle()?;
     }
-    let open = assign(saved, &wait(&mut sources, saved, &[])?);
+    let before = wait(&mut sources, saved, &[], &[], &[])?;
+    let open = assign(saved, &before);
     let mut launch_failures: Vec<(usize, Rc<Error>)> = Vec::new();
     let mut expected: Vec<usize> = Vec::new();
     for (launch, windows) in launches(saved, &open) {
@@ -102,8 +112,8 @@ pub fn restore(session: &Session) -> Result<Restored, Error> {
             }
         }
     }
-    let live = wait(&mut sources, saved, &expected)?;
-    let found = assign(saved, &live);
+    let live = wait(&mut sources, saved, &before, &open, &expected)?;
+    let found = reassign(saved, &before, &open, &live);
     let outcomes: Vec<Outcome> = saved
         .iter()
         .enumerate()
@@ -151,6 +161,11 @@ struct Steps {
 /// What became of `window`, given what each restore step found for it.
 fn outcome(window: &SavedWindow, steps: Steps) -> Outcome {
     match steps {
+        Steps {
+            layout_failure: Some(layout),
+            place_failure: Some(place),
+            ..
+        } => Outcome::LayoutAndPlaceFailed { layout, place },
         Steps {
             place_failure: Some(error),
             ..
@@ -256,13 +271,15 @@ fn focus_order(focus: &Focus) -> Vec<&str> {
         .collect()
 }
 
-/// Reads the open windows until every window at an index in `expected` has a match, or [`WAIT`] runs out. A read
-/// fails while a just launched wezterm has not opened its socket yet, so a failed read is retried until then. At the
-/// deadline a failed read falls back to the last read that worked, so the windows it found are still placed and
-/// reported, and errors only when no read worked.
+/// Reads the open windows until every window at an index in `expected` has a match by [`reassign`] of `before` and
+/// `open`, or [`WAIT`] runs out. A read fails while a just launched wezterm has not opened its socket yet, so a failed
+/// read is retried until then. At the deadline a failed read falls back to the last read that worked, so the windows it
+/// found are still placed and reported, and errors only when no read worked.
 fn wait(
     sources: &mut Sources,
     saved: &[SavedWindow],
+    before: &[LiveWindow],
+    open: &[Option<usize>],
     expected: &[usize],
 ) -> Result<Vec<LiveWindow>, Error> {
     let deadline = Instant::now() + WAIT;
@@ -270,7 +287,7 @@ fn wait(
     loop {
         match sources.live_windows() {
             Ok(live) => {
-                let found = assign(saved, &live);
+                let found = reassign(saved, before, open, &live);
                 let all_found = expected
                     .iter()
                     .all(|index| found.get(*index).is_some_and(Option::is_some));
@@ -347,6 +364,21 @@ mod tests {
                 }
             ),
             Outcome::LayoutFailed(Error::WeztermEmpty { pid: 1 })
+        ));
+        assert!(matches!(
+            outcome(
+                &app,
+                Steps {
+                    is_open: true,
+                    layout_failure: Some(Error::WeztermEmpty { pid: 1 }),
+                    place_failure: Some(Error::ThreadGone { thread: "place" }),
+                    ..launched()
+                }
+            ),
+            Outcome::LayoutAndPlaceFailed {
+                layout: Error::WeztermEmpty { pid: 1 },
+                place: Error::ThreadGone { thread: "place" }
+            }
         ));
         assert!(matches!(outcome(&app, launched()), Outcome::NotSeen));
         assert!(matches!(

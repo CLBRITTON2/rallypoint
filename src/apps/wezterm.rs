@@ -121,11 +121,12 @@ pub fn launch(executable_path: &ExePath, owner: &Owner, cwd: &Path, tabs: &[Wezt
 /// `wezterm-gui.exe` arguments opening a window in `cwd` that resumes `resume`.
 fn launch_arguments(cwd: &Path, resume: Option<&Resume>) -> String {
     let program = pane_program(resume);
-    let program = match program.is_empty() {
-        true => String::new(),
-        false => format!(" -- {}", program.join(" ")),
+    let tail = if program.is_empty() {
+        String::new()
+    } else {
+        format!(" -- {}", program.join(" "))
     };
-    format!("start --cwd {}{program}", quoted(cwd))
+    format!("start --cwd {}{tail}", quoted(cwd))
 }
 
 /// What a pane runs: its Claude Code session, or wezterm's default program when it resumes none.
@@ -300,7 +301,11 @@ fn split<'a>(
 /// `wezterm cli` arguments `head`, then the folder and program of `pane`.
 fn with_pane(head: Vec<String>, pane: &WeztermPane) -> Vec<OsString> {
     let program = pane_program(pane.resume.as_ref());
-    let separator = (!program.is_empty()).then(|| "--".to_string());
+    let separator: Option<String> = if program.is_empty() {
+        None
+    } else {
+        Some("--".to_string())
+    };
     head.into_iter()
         .map(OsString::from)
         .chain([OsString::from("--cwd"), pane.cwd.clone().into_os_string()])

@@ -65,10 +65,10 @@ and owning account). Each session also records the workspace shown on each monit
 [wezterm](https://wezterm.org) window it also saves its tabs in order and, for each pane, its working directory, Claude
 Code session, place in its tab and whether its tab focuses it. For a Store app it saves its AUMID, read from the
 window for a UWP app such as Calculator, whose window belongs to `ApplicationFrameHost.exe`. For a console shell (pwsh,
-Windows PowerShell or cmd) it saves the shell's folder. For a Windows Terminal window it saves each tab's program and, for a
-shell tab, its folder. PowerShell's `cd` changes only PowerShell's own location, not its process's folder, so a
-PowerShell console or tab reopens in the folder it started in. To have it reopen where you last `cd`'d, add this
-line to the `prompt` function in your PowerShell profile (it is optional, and rallypoint works without it):
+Windows PowerShell or cmd) it saves the shell's folder. For a Windows Terminal window it saves each tab's program
+and, for a shell tab, its folder. PowerShell's `cd` changes only PowerShell's own location, not its process's
+folder, so a PowerShell console or tab reopens in the folder it started in. To have it reopen where you last `cd`'d,
+add this line to the `prompt` function in your PowerShell profile (it is optional, and rallypoint works without it):
 
 ```powershell
 if ($PWD.Provider.Name -eq 'FileSystem') { [Environment]::CurrentDirectory = $PWD.ProviderPath }
@@ -84,10 +84,11 @@ stops saving while Windows shuts down, so the apps closing one by one never over
 1. It waits until no new window has appeared for 5 s, so apps still starting at login count as open.
 2. Windows of saved programs that a GlazeWM `wm-exit` left hidden and unmanaged are shown again and handed back to
    GlazeWM, instead of being started a second time.
-3. Open windows are matched to saved ones, and the rest are launched. A wezterm window is matched by the folder of the top
-   left pane of its first tab and reopened there, then its other tabs and its splits are rebuilt with `wezterm cli`,
-   each pane in its folder and Claude Code session, and each tab's focused pane is focused again. Any other program is matched by its executable and launched once with its saved command
-   line, since a second launch of most apps opens a stray window instead of restoring the saved ones. A shell is
+3. Open windows are matched to saved ones, and the rest are launched. A wezterm window is matched by the folder of the
+   top left pane of its first tab and reopened there, then its other tabs and its splits are rebuilt with
+   `wezterm cli`, each pane in its folder and Claude Code session, and each tab's focused pane is focused again. Any
+   other program is matched by its executable and launched once with its saved command line, since a second launch
+   of most apps opens a stray window instead of restoring the saved ones. A shell is
    matched by its folder and reopened there in a console of its own, one per window, without its saved arguments, so
    a window opened to run one command does not run it again. A Windows Terminal window is matched by its tabs and
    reopened with `wt.exe -w new`, one tab per saved tab in the order they were opened, each shell tab in its folder

@@ -115,17 +115,38 @@ impl Launch {
 /// saved window whose key matches any (a shell with no folder) never takes the open window of one with a folder.
 /// Within a pass an open window goes to the first saved window it fits.
 pub fn assign(saved: &[SavedWindow], live: &[LiveWindow]) -> Vec<Option<usize>> {
+    assign_rest(saved, live, &vec![None; saved.len()])
+}
+
+/// [`assign`] for `live`, read after the launches. A saved window that `open` gave a window of `before` keeps that
+/// window, found by its id, so a launched window never takes an open one that has the same key.
+pub fn reassign(
+    saved: &[SavedWindow],
+    before: &[LiveWindow],
+    open: &[Option<usize>],
+    live: &[LiveWindow],
+) -> Vec<Option<usize>> {
+    let kept: Vec<Option<usize>> = (0..saved.len())
+        .map(|index| {
+            let id = &before.get(open.get(index).copied().flatten()?)?.id;
+            live.iter().position(|live| live.id == *id)
+        })
+        .collect();
+    assign_rest(saved, live, &kept)
+}
+
+/// `assigned`, with every saved window it leaves out given an open window by key, exact keys first.
+fn assign_rest(
+    saved: &[SavedWindow],
+    live: &[LiveWindow],
+    assigned: &[Option<usize>],
+) -> Vec<Option<usize>> {
     let saved_keys: Vec<Option<Key>> = saved.iter().map(|window| apps::key(window).ok()).collect();
     let live_keys: Vec<Option<Key>> = live
         .iter()
         .map(|live| apps::key(&live.window).ok())
         .collect();
-    let exact = claim(
-        &saved_keys,
-        &live_keys,
-        &vec![None; saved.len()],
-        <Key as PartialEq>::eq,
-    );
+    let exact = claim(&saved_keys, &live_keys, assigned, <Key as PartialEq>::eq);
     claim(&saved_keys, &live_keys, &exact, Key::matches)
 }
 
@@ -499,6 +520,25 @@ mod tests {
         let saved = vec![program(r"C:\Tools\App.exe", "")];
         let open = vec![live(program(r"c:\tools\app.exe", ""))];
         assert_eq!(assign(&saved, &open), vec![Some(0)]);
+    }
+
+    #[test]
+    fn reassign_keeps_the_window_a_saved_window_had_before_the_launches() {
+        let with_id = |id: &str| LiveWindow {
+            id: id.to_string(),
+            ..live(terminal(r"C:\work\project", None))
+        };
+        let saved = vec![
+            terminal(r"C:\work\project", None),
+            terminal(r"C:\work\project", None),
+        ];
+        let before = vec![with_id("open")];
+        let open = assign(&saved, &before);
+        let after = vec![with_id("launched"), with_id("open")];
+        assert_eq!(
+            reassign(&saved, &before, &open, &after),
+            vec![Some(1), Some(0)]
+        );
     }
 
     #[test]
