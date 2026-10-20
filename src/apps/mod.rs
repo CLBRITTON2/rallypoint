@@ -9,6 +9,7 @@ use crate::model::{AppState, ExePath, SavedWindow, Tab, WeztermTab};
 use crate::plan::{Key, Launch, SkipReason, Start};
 
 pub mod claude_code;
+pub mod herdr;
 pub mod packaged;
 pub mod wezterm;
 pub mod windows_terminal;

@@ -10,12 +10,12 @@ use std::process::Command;
 use percent_encoding::percent_decode_str;
 use serde::Deserialize;
 
-use crate::apps::{claude_code, quoted};
+use crate::apps::{claude_code, herdr, quoted};
 use crate::cwd;
 use crate::error::Error;
 use crate::model::{ExePath, Owner, PaneArea, Resume, WeztermPane, WeztermTab};
 use crate::plan::{Key, Launch, SkipReason, Start};
-use crate::process::Process;
+use crate::process::{Process, Processes};
 
 pub const PROCESS_NAME: &str = "wezterm-gui";
 
@@ -39,9 +39,20 @@ struct ListedSize {
     cols: u32,
 }
 
-/// The tabs of the wezterm window `process` draws, each pane with the Claude Code session it shows.
-pub fn saved_tabs(owner_home: &Path, process: &Process) -> Result<Vec<WeztermTab>, Error> {
+/// The tabs of the wezterm window `process` draws, each pane with the program session it resumes.
+pub fn saved_tabs(
+    processes: &Processes,
+    owner_home: &Path,
+    process: &Process,
+) -> Result<Vec<WeztermTab>, Error> {
     let listed = single_window(list(&socket(owner_home, process.pid))?, process.pid)?;
+    // wezterm lists no pane's process, so herdr is told apart only as the program of a window's one pane.
+    if let [only] = listed.as_slice()
+        && herdr::runs_in(processes, process.pid)?
+    {
+        let pane = listed_pane(only, local_path(&only.cwd)?, Some(Resume::Herdr));
+        return Ok(vec![WeztermTab { panes: vec![pane] }]);
+    }
     by_tab(listed)
         .into_iter()
         .map(|panes| {
@@ -58,7 +69,11 @@ fn saved_pane(owner_home: &Path, pane: ListedPane) -> Result<WeztermPane, Error>
     let cwd = local_path(&pane.cwd)?;
     let resume = claude_code::session_id(owner_home, &cwd, &pane.title)?
         .map(|session_id| Resume::ClaudeCode { session_id });
-    Ok(WeztermPane {
+    Ok(listed_pane(&pane, cwd, resume))
+}
+
+fn listed_pane(pane: &ListedPane, cwd: PathBuf, resume: Option<Resume>) -> WeztermPane {
+    WeztermPane {
         cwd,
         resume,
         area: PaneArea {
@@ -68,7 +83,7 @@ fn saved_pane(owner_home: &Path, pane: ListedPane) -> Result<WeztermPane, Error>
             rows: pane.size.rows,
         },
         active: pane.is_active,
-    })
+    }
 }
 
 /// `listed` grouped by tab, tabs and panes in the order wezterm lists them.
@@ -129,11 +144,13 @@ fn launch_arguments(cwd: &Path, resume: Option<&Resume>) -> String {
     format!("start --cwd {}{tail}", quoted(cwd))
 }
 
-/// What a pane runs: its Claude Code session, or wezterm's default program when it resumes none.
+/// What a pane runs: the program session it resumes, or wezterm's default program when it resumes none.
 fn pane_program(resume: Option<&Resume>) -> Vec<String> {
-    resume
-        .map(|Resume::ClaudeCode { session_id }| claude_code::resume_command(session_id))
-        .unwrap_or_default()
+    match resume {
+        Some(Resume::ClaudeCode { session_id }) => claude_code::resume_command(session_id),
+        Some(Resume::Herdr) => herdr::command(),
+        None => Vec::new(),
+    }
 }
 
 /// Opens the panes of `tabs` beyond the one [`launch`] started, in the window wezterm-gui process `pid` draws, and
@@ -548,6 +565,26 @@ mod tests {
         assert_eq!(
             arguments(&pane(r"C:\a", 0, 0, 1, 1)),
             ["spawn", "--cwd", r"C:\a"]
+        );
+    }
+
+    #[test]
+    fn launch_starts_herdr_in_the_pane_folder() {
+        let tabs = vec![WeztermTab {
+            panes: vec![WeztermPane {
+                resume: Some(Resume::Herdr),
+                ..pane(r"C:\work\project", 0, 0, 1, 1)
+            }],
+        }];
+        let launched = launch(
+            &ExePath::new(r"C:\tools\wezterm-gui.exe".to_string()),
+            &Owner::new("owner".to_string()),
+            Path::new(r"C:\work\project"),
+            &tabs,
+        );
+        assert_eq!(
+            launched.arguments,
+            r#"start --cwd "C:\work\project" -- herdr"#
         );
     }
 

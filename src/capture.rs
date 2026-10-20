@@ -50,7 +50,7 @@ impl Sources {
                     Kind::Wezterm => {
                         let owner_home = account::home_of(&process.owner)?;
                         AppState::Wezterm {
-                            tabs: wezterm::saved_tabs(&owner_home, &process)?,
+                            tabs: wezterm::saved_tabs(&self.processes, &owner_home, &process)?,
                         }
                     }
                     Kind::WindowsTerminal => AppState::WindowsTerminal {

@@ -111,6 +111,11 @@ impl Processes {
         self.started_where(&format!("Name = '{name}'"))
     }
 
+    /// The running processes of executable file `name` that process `parent` started, oldest first.
+    pub fn children_named(&self, parent: u32, name: &'static str) -> Result<Vec<Started>, Error> {
+        self.started_where(&format!("ParentProcessId = {parent} AND Name = '{name}'"))
+    }
+
     /// The running processes that WQL `condition` selects, oldest first.
     fn started_where(&self, condition: &str) -> Result<Vec<Started>, Error> {
         let query = format!(

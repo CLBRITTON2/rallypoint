@@ -10,7 +10,7 @@ use crate::glazewm::State;
 
 /// The session format `capture` writes and `store::read` accepts. Bump it on any change an older rallypoint could
 /// misread, since a session of another version is refused rather than migrated.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 #[derive(Serialize, Deserialize)]
 pub struct Session {
@@ -226,7 +226,11 @@ pub struct Tab {
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Resume {
-    ClaudeCode { session_id: String },
+    ClaudeCode {
+        session_id: String,
+    },
+    /// herdr, which brings back its own workspaces and agent sessions when it starts.
+    Herdr,
 }
 
 /// Whether two saves hold the same windows, ignoring titles: a title changes with every page or command and needs

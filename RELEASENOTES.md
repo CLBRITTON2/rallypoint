@@ -12,7 +12,9 @@ release go under `## [Unreleased]`, renamed to the version when it is tagged.
   `shell:AppsFolder`, instead of being skipped.
 - UWP apps, whose window belongs to `ApplicationFrameHost.exe` (Calculator, for one), are saved by the AUMID their
   window names and launched again the same way.
-- Sessions move to format version 4, so the first `save` after upgrading is the oldest one that restores.
+- A wezterm window whose one pane runs herdr reopens running `herdr`, which brings back its own workspaces and
+  agent sessions.
+- Sessions move to format version 5, so the first `save` after upgrading is the oldest one that restores.
 
 ## [0.2.0] - 2026-10-05
 

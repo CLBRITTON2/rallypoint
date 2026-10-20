@@ -63,7 +63,9 @@ Exit codes: 0 done, 1 when `restore` could not bring back every window, 2 error.
 For each window GlazeWM manages: its workspace and state, and the program behind it (executable path, command line
 and owning account). Each session also records the workspace shown on each monitor and the one with focus. For a
 [wezterm](https://wezterm.org) window it also saves its tabs in order and, for each pane, its working directory, Claude
-Code session, place in its tab and whether its tab focuses it. For a Store app it saves its AUMID, read from the
+Code session, place in its tab and whether its tab focuses it. A wezterm window whose one pane runs
+[herdr](https://herdr.dev) is saved as a herdr pane in its folder, since herdr saves its own
+workspaces and agent sessions. For a Store app it saves its AUMID, read from the
 window for a UWP app such as Calculator, whose window belongs to `ApplicationFrameHost.exe`. For a console shell (pwsh,
 Windows PowerShell or cmd) it saves the shell's folder. For a Windows Terminal window it saves each tab's program
 and, for a shell tab, its folder. PowerShell's `cd` changes only PowerShell's own location, not its process's
@@ -86,7 +88,8 @@ stops saving while Windows shuts down, so the apps closing one by one never over
    GlazeWM, instead of being started a second time.
 3. Open windows are matched to saved ones, and the rest are launched. A wezterm window is matched by the folder of the
    top left pane of its first tab and reopened there, then its other tabs and its splits are rebuilt with
-   `wezterm cli`, each pane in its folder and Claude Code session, and each tab's focused pane is focused again. Any
+   `wezterm cli`, each pane in its folder and Claude Code session, and each tab's focused pane is focused again. A
+   herdr pane reopens running `herdr` from the owner's PATH, and herdr brings back its own workspaces. Any
    other program is matched by its executable and launched once with its saved command line, since a second launch
    of most apps opens a stray window instead of restoring the saved ones. A shell is
    matched by its folder and reopened there in a console of its own, one per window, without its saved arguments, so
@@ -115,6 +118,8 @@ as that account.
   back to within a cell.
 - A wezterm pane running WSL reopens in its default folder, since wezterm sees only the Windows folder of `wsl.exe`,
   not a `cd` inside Linux.
+- herdr is recognized only in a wezterm window with one pane. In a window with more tabs or panes, its pane reopens
+  as a plain shell.
 - What happens inside a window is up to the app: a browser restores its own tabs.
 - A `watch` that is killed (`Stop-Process`) leaves its tray icon until the pointer passes over it.
 
