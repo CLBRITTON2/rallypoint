@@ -219,7 +219,7 @@ mod tests {
     use super::*;
     use crate::apps::{wezterm, windows_terminal};
     use crate::fixtures;
-    use crate::model::{AppState, Resume, Tab, WeztermPane, WeztermTab};
+    use crate::model::{AppState, Perusal, Resume, Tab, WeztermPane, WeztermTab};
 
     fn program(path: &str, command_line: &str) -> SavedWindow {
         SavedWindow {
@@ -273,6 +273,7 @@ mod tests {
             program: Some(ExePath::new(path.to_string())),
             command_line: Some(command_line.to_string()),
             cwd: cwd.map(PathBuf::from),
+            perusal: None,
         }
     }
 
@@ -323,6 +324,28 @@ mod tests {
                     vec![0]
                 ),
                 (r#""wt.exe" -w new"#.to_string(), vec![1]),
+            ]
+        );
+    }
+
+    #[test]
+    fn launches_start_the_perusal_a_powershell_tab_ran() {
+        let saved = vec![windows_terminal(vec![Tab {
+            perusal: Some(Perusal {
+                executable_path: ExePath::new(r"C:\Users\O'Neil\go\bin\perusal.exe".to_string()),
+                arguments: "follow agent".to_string(),
+            }),
+            ..tab(PWSH, "pwsh", Some(r"C:\work"))
+        }])];
+        let planned: Vec<String> = launches(&saved, &[None])
+            .into_iter()
+            .map(|(launch, _)| launch.command_line())
+            .collect();
+        assert_eq!(
+            planned,
+            vec![
+                r#""wt.exe" -w new new-tab -d "C:\work" "C:\Program Files\PowerShell\7\pwsh.exe" -NoExit -Command "& 'C:\Users\O''Neil\go\bin\perusal.exe' follow agent""#
+                    .to_string()
             ]
         );
     }

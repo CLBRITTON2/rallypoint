@@ -129,7 +129,8 @@ mod tests {
     use super::*;
     use crate::fixtures;
     use crate::model::{
-        AppState, ExePath, Focus, Resume, SavedWindow, Tab, WeztermPane, WeztermTab, WindowState,
+        AppState, ExePath, Focus, Perusal, Resume, SavedWindow, Tab, WeztermPane, WeztermTab,
+        WindowState,
     };
 
     fn sessions_saved_at(folder: &Path, saved_at: &[u64]) -> Result<(), Error> {
@@ -190,6 +191,10 @@ mod tests {
             program: Some(ExePath::new(r"C:\tools\shell.exe".to_string())),
             command_line: None,
             cwd: Some(PathBuf::from(r"C:\work\project")),
+            perusal: Some(Perusal {
+                executable_path: ExePath::new(r"C:\tools\perusal.exe".to_string()),
+                arguments: "follow agent".to_string(),
+            }),
         };
         let windows = vec![
             fixtures::window("app", Some(r"C:\tools\app.exe")),

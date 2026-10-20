@@ -10,7 +10,7 @@ use crate::glazewm::State;
 
 /// The session format `capture` writes and `store::read` accepts. Bump it on any change an older rallypoint could
 /// misread, since a session of another version is refused rather than migrated.
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 #[derive(Serialize, Deserialize)]
 pub struct Session {
@@ -220,6 +220,15 @@ pub struct Tab {
     pub command_line: Option<String>,
     /// None for a tab that is not a shell, and for a shell whose folder could not be read.
     pub cwd: Option<PathBuf>,
+    /// None for a tab that is not a PowerShell running perusal.
+    pub perusal: Option<Perusal>,
+}
+
+/// A perusal a PowerShell tab was running, which restore starts again in the reopened tab.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct Perusal {
+    pub executable_path: ExePath,
+    pub arguments: String,
 }
 
 /// A program session a pane reopens into.

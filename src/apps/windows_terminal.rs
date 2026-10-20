@@ -8,7 +8,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::BOOL;
 
-use crate::apps::{self, Kind, quoted};
+use crate::apps::{self, Kind, perusal, quoted};
 use crate::cwd;
 use crate::error::Error;
 use crate::model::{ExePath, Owner, Tab};
@@ -50,6 +50,14 @@ pub fn saved_tabs(
                     true => cwd::of_process(process.pid)?,
                     false => None,
                 },
+                perusal: match process
+                    .executable_path
+                    .as_ref()
+                    .is_some_and(perusal::reopens_in)
+                {
+                    true => perusal::running_in(processes, process.pid)?,
+                    false => None,
+                },
                 program: process.executable_path,
                 command_line: process.command_line,
             })
@@ -81,8 +89,9 @@ pub fn launch(owner: &Owner, tabs: &[Tab]) -> Launch {
     }
 }
 
-/// wt.exe arguments opening one new window holding `tabs`. A shell tab runs its program alone, so a tab opened to run
-/// one command does not run it again. A tab with neither program nor command line is left out.
+/// wt.exe arguments opening one new window holding `tabs`. A shell tab runs its program alone, or with the perusal it
+/// ran, so a tab opened to run one command does not run it again. A tab with neither program nor command line is left
+/// out.
 fn launch_arguments(tabs: &[Tab]) -> String {
     let opened: Vec<String> = tabs
         .iter()
@@ -90,7 +99,12 @@ fn launch_arguments(tabs: &[Tab]) -> String {
             let path = tab.program.as_ref().map(ExePath::as_str);
             let command = match (path, tab.command_line.as_deref()) {
                 (Some(path), _) if apps::kind_of(&apps::program_name(path)) == Kind::Shell => {
-                    format!("\"{path}\"")
+                    match &tab.perusal {
+                        Some(perusal) => {
+                            format!("\"{path}\" {}", perusal::shell_arguments(perusal))
+                        }
+                        None => format!("\"{path}\""),
+                    }
                 }
                 (_, Some(command_line)) => command_line.to_string(),
                 (Some(path), None) => format!("\"{path}\""),

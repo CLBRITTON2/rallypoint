@@ -14,7 +14,8 @@ release go under `## [Unreleased]`, renamed to the version when it is tagged.
   window names and launched again the same way.
 - A wezterm window whose one pane runs herdr reopens running `herdr`, which brings back its own workspaces and
   agent sessions.
-- Sessions move to format version 5, so the first `save` after upgrading is the oldest one that restores.
+- A Windows Terminal PowerShell tab running perusal reopens running it again with its saved arguments.
+- Sessions move to format version 6, so the first `save` after upgrading is the oldest one that restores.
 
 ## [0.2.0] - 2026-10-05
 

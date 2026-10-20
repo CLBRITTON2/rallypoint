@@ -68,7 +68,8 @@ Code session, place in its tab and whether its tab focuses it. A wezterm window 
 workspaces and agent sessions. For a Store app it saves its AUMID, read from the
 window for a UWP app such as Calculator, whose window belongs to `ApplicationFrameHost.exe`. For a console shell (pwsh,
 Windows PowerShell or cmd) it saves the shell's folder. For a Windows Terminal window it saves each tab's program
-and, for a shell tab, its folder. PowerShell's `cd` changes only PowerShell's own location, not its process's
+and, for a shell tab, its folder, plus the command line of a perusal (a git working tree reviewer)
+a PowerShell tab runs. PowerShell's `cd` changes only PowerShell's own location, not its process's
 folder, so a PowerShell console or tab reopens in the folder it started in. To have it reopen where you last `cd`'d,
 add this line to the `prompt` function in your PowerShell profile (it is optional, and rallypoint works without it):
 
@@ -95,8 +96,9 @@ stops saving while Windows shuts down, so the apps closing one by one never over
    matched by its folder and reopened there in a console of its own, one per window, without its saved arguments, so
    a window opened to run one command does not run it again. A Windows Terminal window is matched by its tabs and
    reopened with `wt.exe -w new`, one tab per saved tab in the order they were opened, each shell tab in its folder
-   and without its saved arguments. A Store app is matched by its AUMID and launched once through
-   `explorer.exe shell:AppsFolder\<AUMID>`, since its own executable cannot be started.
+   and without its saved arguments. A PowerShell tab that ran perusal reopens running it again with
+   `-NoExit -Command`, so the shell stays open once perusal exits. A Store app is matched by its AUMID and launched
+   once through `explorer.exe shell:AppsFolder\<AUMID>`, since its own executable cannot be started.
 4. Each window is moved to its saved workspace and state. Windows that are already right are left alone.
 5. The workspace each monitor showed is shown again, and the one that had focus gets it back.
 
