@@ -48,9 +48,13 @@ pub fn saved_tabs(
     let listed = single_window(list(&socket(owner_home, process.pid))?, process.pid)?;
     // wezterm lists no pane's process, so herdr is told apart only as the program of a window's one pane.
     if let [only] = listed.as_slice()
-        && herdr::runs_in(processes, process.pid)?
+        && let Some(arguments) = herdr::client_arguments(processes, process.pid)?
     {
-        let pane = listed_pane(only, local_path(&only.cwd)?, Some(Resume::Herdr));
+        let pane = listed_pane(
+            only,
+            local_path(&only.cwd)?,
+            Some(Resume::Herdr { arguments }),
+        );
         return Ok(vec![WeztermTab { panes: vec![pane] }]);
     }
     by_tab(listed)
@@ -148,7 +152,7 @@ fn launch_arguments(cwd: &Path, resume: Option<&Resume>) -> String {
 fn pane_program(resume: Option<&Resume>) -> Vec<String> {
     match resume {
         Some(Resume::ClaudeCode { session_id }) => claude_code::resume_command(session_id),
-        Some(Resume::Herdr) => herdr::command(),
+        Some(Resume::Herdr { arguments }) => herdr::command(arguments),
         None => Vec::new(),
     }
 }
@@ -569,10 +573,12 @@ mod tests {
     }
 
     #[test]
-    fn launch_starts_herdr_in_the_pane_folder() {
+    fn launch_starts_herdr_with_its_arguments_in_the_pane_folder() {
         let tabs = vec![WeztermTab {
             panes: vec![WeztermPane {
-                resume: Some(Resume::Herdr),
+                resume: Some(Resume::Herdr {
+                    arguments: vec!["--remote".to_string(), "host".to_string()],
+                }),
                 ..pane(r"C:\work\project", 0, 0, 1, 1)
             }],
         }];
@@ -584,7 +590,7 @@ mod tests {
         );
         assert_eq!(
             launched.arguments,
-            r#"start --cwd "C:\work\project" -- herdr"#
+            r#"start --cwd "C:\work\project" -- herdr --remote host"#
         );
     }
 

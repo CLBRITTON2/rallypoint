@@ -71,6 +71,10 @@ pub enum Error {
         "WMI withholds the executable path or command line of rallypoint process {pid}, so its command is unknown"
     )]
     CommandLineHidden { pid: u32 },
+    #[error(
+        "WMI withholds the executable path or command line of herdr client process {pid}, so its arguments are unknown"
+    )]
+    HerdrCommandLineHidden { pid: u32 },
     #[error("another rallypoint watch is already running, rallypoint status shows its pid")]
     WatchRunning,
     #[error("Shell_NotifyIconW {message} for the tray icon failed")]

@@ -12,10 +12,10 @@ release go under `## [Unreleased]`, renamed to the version when it is tagged.
   `shell:AppsFolder`, instead of being skipped.
 - UWP apps, whose window belongs to `ApplicationFrameHost.exe` (Calculator, for one), are saved by the AUMID their
   window names and launched again the same way.
-- A wezterm window whose one pane runs herdr reopens running `herdr`, which brings back its own workspaces and
-  agent sessions.
+- A wezterm window whose one pane runs herdr reopens running `herdr` with the client's arguments (such as
+  `--remote <host>`), and herdr brings back its own workspaces and agent sessions.
 - A Windows Terminal PowerShell tab running perusal reopens running it again with its saved arguments.
-- Sessions move to format version 6, so the first `save` after upgrading is the oldest one that restores.
+- Sessions move to format version 7, so the first `save` after upgrading is the oldest one that restores.
 
 ## [0.2.0] - 2026-10-05
 

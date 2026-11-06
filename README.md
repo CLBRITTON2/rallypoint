@@ -64,8 +64,8 @@ For each window GlazeWM manages: its workspace and state, and the program behind
 and owning account). Each session also records the workspace shown on each monitor and the one with focus. For a
 [wezterm](https://wezterm.org) window it also saves its tabs in order and, for each pane, its working directory, Claude
 Code session, place in its tab and whether its tab focuses it. A wezterm window whose one pane runs
-[herdr](https://herdr.dev) is saved as a herdr pane in its folder, since herdr saves its own
-workspaces and agent sessions. For a Store app it saves its AUMID, read from the
+[herdr](https://herdr.dev) is saved as a herdr pane in its folder with the herdr client's arguments, since herdr
+saves its own workspaces and agent sessions. For a Store app it saves its AUMID, read from the
 window for a UWP app such as Calculator, whose window belongs to `ApplicationFrameHost.exe`. For a console shell (pwsh,
 Windows PowerShell or cmd) it saves the shell's folder. For a Windows Terminal window it saves each tab's program
 and, for a shell tab, its folder, plus the command line of a perusal (a git working tree reviewer)
@@ -90,7 +90,8 @@ stops saving while Windows shuts down, so the apps closing one by one never over
 3. Open windows are matched to saved ones, and the rest are launched. A wezterm window is matched by the folder of the
    top left pane of its first tab and reopened there, then its other tabs and its splits are rebuilt with
    `wezterm cli`, each pane in its folder and Claude Code session, and each tab's focused pane is focused again. A
-   herdr pane reopens running `herdr` from the owner's PATH, and herdr brings back its own workspaces. Any
+   herdr pane reopens running `herdr` from the owner's PATH with its saved arguments (such as `--remote <host>`), and
+   herdr brings back its own workspaces. Any
    other program is matched by its executable and launched once with its saved command line, since a second launch
    of most apps opens a stray window instead of restoring the saved ones. A shell is
    matched by its folder and reopened there in a console of its own, one per window, without its saved arguments, so
